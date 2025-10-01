@@ -203,4 +203,3 @@ select:
 
             // Force lighting schedule to recalculate with new timezone
             id(lighting_control_manager).execute();
-

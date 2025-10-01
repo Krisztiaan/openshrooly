@@ -1,103 +1,214 @@
-# This script evaluates humidity against a target setpoint with hysteresis.
-# It turns the humidifier fan ON when humidity is below target,
-# and OFF when above, while updating a status sensor accordingly.
-# This is run every second when the new humidity value comes in
+# This script evaluates humidity against a target setpoint with adaptive control.
+# It smooths incoming readings, enforces dwell times, and drives the humidifier PWM manager.
 
 - id: humidity_control_manager
   mode: queued
   then:
   - lambda: |-
-      // Check if we have valid sensor values
-      if (isnan(id(humidity).state)) {
-        return;
-      }
-      if (isnan(id(target_humidity).state)) {
+      if (isnan(id(humidity).state) || isnan(id(target_humidity).state)) {
         return;
       }
 
-      // Both values are valid, proceed with control
-      {
-        // Get hysteresis value
-        float hyst = id(humidity_hysteresis).state;
+      static float humidity_samples[3] = {NAN, NAN, NAN};
+      static size_t humidity_index = 0;
+      static bool humidity_buffer_full = false;
+      static uint32_t last_on_ms = 0;
+      static uint32_t last_off_ms = 0;
+      static bool pending_on_dwell_log = false;
+      static bool pending_off_dwell_log = false;
 
-        // Use raw humidity sensor value
-        float h = id(humidity).state;
-        float t = id(target_humidity).state;
+      const uint32_t now = millis();
+      const float raw_humidity = id(humidity).state;
+      const float target_humidity_value = id(target_humidity).state;
 
-        // Helper lambda for humidifier I2C control using copro_bus
-        auto copro_write_humidifier = [&](uint8_t value) -> bool {
-          id(copro_bus).execute(0x6C, 0x00, value, 2, 0);
-          return !id(copro_last_error);
-        };
+      float delta_on = id(humidity_delta_on).state;
+      float delta_off = id(humidity_delta_off).state;
+      float min_on_s = id(humidifier_min_on_time).state;
+      float min_off_s = id(humidifier_min_off_time).state;
 
-        // Don't control humidifier if humidity is 0 (sensor not initialized)
-        if (h == 0.0f) {
-          if (id(humidifier_on_flag)) {
-            // Turn off if it was on
-            id(humidifier_on_flag) = false;
-            id(humidifier_pwm_control).stop();  // Stop PWM control script
+      if (delta_on < 0.0f) {
+        delta_on = 0.0f;
+      }
+      if (delta_off < 0.0f) {
+        delta_off = 0.0f;
+      }
+      if (min_on_s < 0.0f) {
+        min_on_s = 0.0f;
+      }
+      if (min_off_s < 0.0f) {
+        min_off_s = 0.0f;
+      }
 
-            // Explicitly turn off the fan via I2C to ensure it's OFF
-            if (!copro_write_humidifier(0x00)) {
-              ESP_LOGW("humidity", "Failed to turn off humidifier while waiting for sensor to initialize");
-            } else {
-              ESP_LOGW("humidity", "Turning off humidifier - waiting for humidity sensor to initialize");
-            }
-          }
-          // Show waiting status
-          id(humidifier_fan_status).publish_state("Waiting to Settle");
-          return;
-        }
+      const uint32_t min_on_ms = static_cast<uint32_t>(min_on_s * 1000.0f);
+      const uint32_t min_off_ms = static_cast<uint32_t>(min_off_s * 1000.0f);
 
-        // Control logic with +/- hysteresis
-        // Turn ON when humidity drops below (target - hysteresis)
-        // Turn OFF when humidity rises above (target + hysteresis)
-        bool should_turn_on = false;
-        bool should_turn_off = false;
+      auto copro_write_humidifier = [&](uint8_t value) -> bool {
+        id(copro_bus).execute(0x6C, 0x00, value, 2, 0);
+        return !id(copro_last_error);
+      };
 
-        if (!id(humidifier_on_flag) && h < t - hyst) {
-          should_turn_on = true;
-        } else if (id(humidifier_on_flag) && h >= t + hyst) {
-          should_turn_off = true;
-        }
-
-        // Execute control actions
-        if (should_turn_on) {
-          ESP_LOGI("humidity", "🟢 Turning ON humidifier - humidity %.1f%% < target %.1f%% - hyst %.2f%%", h, t, hyst);
-          id(humidifier_on_flag) = true;
-
-          // Start the PWM control script
-          id(humidifier_pwm_control).execute();
-
-          // Schedule effectiveness check (it will save its own start humidity)
-          id(humidifier_effectiveness_check).execute();
-
-        } else if (should_turn_off) {
-          ESP_LOGI("humidity", "🔴 Turning OFF humidifier - humidity %.1f%% >= target %.1f%% + hyst %.2f%%", h, t, hyst);
+      if (raw_humidity == 0.0f) {
+        if (id(humidifier_on_flag)) {
           id(humidifier_on_flag) = false;
-
-          // Stop the PWM script immediately
           id(humidifier_pwm_control).stop();
 
-          // Explicitly turn off the fan via I2C to ensure it's OFF
           if (!copro_write_humidifier(0x00)) {
-            ESP_LOGW("humidity", "❌ I2C write FAILED for humidifier OFF");
+            ESP_LOGW("humidity", "Failed to turn off humidifier while waiting for sensor to initialize");
+          } else {
+            ESP_LOGW("humidity", "Turning off humidifier - waiting for humidity sensor to initialize");
           }
         }
 
-        // Always publish status showing actual humidity
-        float actual_humidity = id(humidity).state;  // Show actual current humidity
+        humidity_samples[0] = humidity_samples[1] = humidity_samples[2] = NAN;
+        humidity_index = 0;
+        humidity_buffer_full = false;
+        last_off_ms = now;
+        pending_on_dwell_log = false;
+        pending_off_dwell_log = false;
 
-        // Create status string showing target +/- hysteresis range
-        std::string range_info = str_sprintf("(%.1f-%.1f%%)", t - hyst, t + hyst);
+        id(humidifier_fan_status).publish_state("Waiting to Settle");
+        return;
+      }
 
-        if (id(humidifier_on_flag)) {
-          id(humidifier_fan_status).publish_state(
-            str_sprintf("ON — humidity %.1f%% %s", actual_humidity, range_info.c_str()).c_str()
-          );
-        } else {
-          id(humidifier_fan_status).publish_state(
-            str_sprintf("OFF — humidity %.1f%% %s", actual_humidity, range_info.c_str()).c_str()
-          );
+      humidity_samples[humidity_index] = raw_humidity;
+      humidity_index = (humidity_index + 1) % 3;
+      if (!humidity_buffer_full && humidity_index == 0) {
+        humidity_buffer_full = true;
+      }
+
+      float filtered_values[3];
+      int filtered_count = 0;
+      for (float sample : humidity_samples) {
+        if (!isnan(sample)) {
+          filtered_values[filtered_count++] = sample;
         }
-      }  // End of valid values check
+      }
+
+      float control_humidity = raw_humidity;
+      if (filtered_count == 3) {
+        if (filtered_values[0] > filtered_values[1]) {
+          float tmp = filtered_values[0];
+          filtered_values[0] = filtered_values[1];
+          filtered_values[1] = tmp;
+        }
+        if (filtered_values[1] > filtered_values[2]) {
+          float tmp = filtered_values[1];
+          filtered_values[1] = filtered_values[2];
+          filtered_values[2] = tmp;
+        }
+        if (filtered_values[0] > filtered_values[1]) {
+          float tmp = filtered_values[0];
+          filtered_values[0] = filtered_values[1];
+          filtered_values[1] = tmp;
+        }
+        control_humidity = filtered_values[1];
+      } else if (filtered_count == 2) {
+        control_humidity = (filtered_values[0] + filtered_values[1]) / 2.0f;
+      } else if (filtered_count == 1) {
+        control_humidity = filtered_values[0];
+      }
+
+      const float on_threshold = target_humidity_value - delta_on;
+      const float off_threshold = target_humidity_value + delta_off;
+      const bool humidifier_on = id(humidifier_on_flag);
+
+      bool should_turn_on = false;
+      bool should_turn_off = false;
+
+      const bool on_threshold_met = control_humidity <= on_threshold;
+      const bool off_threshold_met = control_humidity >= off_threshold;
+      const bool dwell_allows_on = !humidifier_on && (last_off_ms == 0 || (now - last_off_ms) >= min_off_ms);
+      const bool dwell_allows_off = humidifier_on && (last_on_ms == 0 || (now - last_on_ms) >= min_on_ms);
+
+      if (!humidifier_on && on_threshold_met && dwell_allows_on) {
+        should_turn_on = true;
+      }
+
+      if (humidifier_on && off_threshold_met && dwell_allows_off) {
+        should_turn_off = true;
+      }
+
+      if (!humidifier_on && on_threshold_met && !dwell_allows_on) {
+        if (!pending_on_dwell_log) {
+          const uint32_t elapsed = now - last_off_ms;
+          const uint32_t remaining = (min_off_ms > elapsed) ? (min_off_ms - elapsed) : 0;
+          ESP_LOGI(
+            "humidity",
+            "Humidity %.1f%% below %.1f%% but enforcing %.0fs minimum off dwell (%.0fs remaining)",
+            control_humidity,
+            on_threshold,
+            min_off_s,
+            remaining / 1000.0f
+          );
+          pending_on_dwell_log = true;
+        }
+      } else {
+        pending_on_dwell_log = false;
+      }
+
+      if (humidifier_on && off_threshold_met && !dwell_allows_off) {
+        if (!pending_off_dwell_log) {
+          const uint32_t elapsed = now - last_on_ms;
+          const uint32_t remaining = (min_on_ms > elapsed) ? (min_on_ms - elapsed) : 0;
+          ESP_LOGI(
+            "humidity",
+            "Humidity %.1f%% above %.1f%% but enforcing %.0fs minimum on dwell (%.0fs remaining)",
+            control_humidity,
+            off_threshold,
+            min_on_s,
+            remaining / 1000.0f
+          );
+          pending_off_dwell_log = true;
+        }
+      } else {
+        pending_off_dwell_log = false;
+      }
+
+      if (should_turn_on) {
+        id(humidifier_on_flag) = true;
+        last_on_ms = now;
+        pending_off_dwell_log = false;
+
+        id(humidifier_pwm_control).execute();
+        id(humidifier_effectiveness_check).execute();
+
+        ESP_LOGI(
+          "humidity",
+          "Turning on humidifier: control %.1f%%, target %.1f%% (band %.1f%%-%.1f%%)",
+          control_humidity,
+          target_humidity_value,
+          on_threshold,
+          off_threshold
+        );
+
+      } else if (should_turn_off) {
+        id(humidifier_on_flag) = false;
+        last_off_ms = now;
+        pending_on_dwell_log = false;
+
+        id(humidifier_pwm_control).stop();
+
+        if (!copro_write_humidifier(0x00)) {
+          ESP_LOGW("humidity", "❌ I2C write FAILED for humidifier OFF");
+        }
+
+        ESP_LOGI(
+          "humidity",
+          "Turning off humidifier: control %.1f%%, target %.1f%% (band %.1f%%-%.1f%%)",
+          control_humidity,
+          target_humidity_value,
+          on_threshold,
+          off_threshold
+        );
+      }
+
+      const float actual_humidity = raw_humidity;
+      const std::string status = str_sprintf(
+        "%s — humidity %.1f%% (ctrl %.1f%%, band %.1f%%-%.1f%%)",
+        id(humidifier_on_flag) ? "ON" : "OFF",
+        actual_humidity,
+        control_humidity,
+        on_threshold,
+        off_threshold
+      );
+      id(humidifier_fan_status).publish_state(status.c_str());
