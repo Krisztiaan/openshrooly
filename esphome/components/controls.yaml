@@ -1,20 +1,5 @@
 # These are all the controls that are visible to the UI
 
-switch:
-  - platform: template
-    id: temperature_control_enabled
-    name: "Temperature Control Enabled"
-    icon: mdi:thermometer-auto
-    optimistic: true
-    restore_mode: RESTORE_DEFAULT_OFF  # Restore user's preference
-    web_server:
-      sorting_group_id: grp_temperature
-      sorting_weight: 1
-    turn_on_action:
-      - script.execute: temperature_control_manager
-    turn_off_action:
-      - script.execute: temperature_control_manager
-
 number:
   - platform: template
     id: target_humidity
@@ -150,6 +135,23 @@ number:
       sorting_weight: 40
     set_action:
       - script.execute: humidity_control_manager
+
+  - platform: template
+    id: ble_max_devices
+    name: "BLE Max Paired Devices"
+    min_value: 1
+    max_value: 8
+    step: 1
+    optimistic: true
+    restore_value: true
+    initial_value: 4
+    entity_category: config
+    web_server:
+      sorting_group_id: grp_extras
+      sorting_weight: 20
+    set_action:
+      - lambda: |-
+          id(ble_gateway).set_max_devices(static_cast<size_t>(x));
   # Temperature control (optional - requires external heating via Home Assistant)
   - platform: template
     id: temperature_target
@@ -428,6 +430,17 @@ text_sensor:
 # Heat requested binary sensor moved to components/alerts_simple.yaml for earlier loading
 
 button:
+  - platform: template
+    id: ble_clear_paired
+    name: "BLE Forget Paired Devices"
+    icon: mdi:bluetooth-off
+    entity_category: config
+    web_server:
+      sorting_group_id: grp_extras
+      sorting_weight: 2
+    on_press:
+      - lambda: |-
+          id(ble_gateway).clear_trusted_devices();
   - platform: template
     name: "Beeper Test"
     icon: mdi:volume-high

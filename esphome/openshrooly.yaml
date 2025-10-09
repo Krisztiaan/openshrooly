@@ -1,5 +1,6 @@
 substitutions:
   device_version: "0.9"
+  ble_enabled: "false"
 
 esphome:
   name: openshrooly
@@ -8,9 +9,24 @@ esphome:
   project:
     name: grahamsz.openshrooly
     version: ${device_version}
+  includes:
+    - ../external_components/open_ble/ble_gateway.h
   platformio_options:
+    board_build.partitions: ../../../../partitions_8mb.csv
     build_flags:
       - -Wno-cpp  # Suppress preprocessor warnings (including deprecation warnings)
+      - -D CONFIG_BT_NIMBLE_ROLE_CENTRAL_DISABLED  # Peripheral-only, save flash
+      - -D CONFIG_BT_NIMBLE_ROLE_OBSERVER_DISABLED  # Disable scanner
+      - -D CONFIG_BT_NIMBLE_EXT_ADV=0  # Use legacy advertising to keep binary size down
+      - -D CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES=0  # No secondary advertising sets
+      - -D CONFIG_BT_NIMBLE_ENABLE_PERIODIC_ADV=0  # Disable periodic advertising support
+      - -D CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1  # Only one controller connection at a time
+      - -D CONFIG_BT_NIMBLE_MAX_BONDS=4  # Match BLE trusted device cap
+      - -D CONFIG_BT_NIMBLE_MAX_CCCDS=16  # Enough CCCDs for characteristics we expose
+      - -D CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=185  # Balance throughput and memory
+      - -UCONFIG_BT_NIMBLE_MESH  # Drop Bluetooth Mesh support entirely for compact build
+    lib_deps:
+      - h2zero/NimBLE-Arduino@^1.4.3  # Provides NimBLEDevice for secure BLE support
 
   on_boot:
     priority: 600  # Very early boot
@@ -84,6 +100,11 @@ external_components:
   - source:
       type: local
       path: external_components
+  - source:
+      type: local
+      path: ../external_components
+    components:
+      - open_ble
 # LVGL is now a native component in ESPHome 2024.8.0+
 
 wifi:
@@ -291,20 +312,51 @@ interval:
       - component.update: my_display
 
 
+
 <<: !include components/globals.yaml
 <<: !include components/alerts_simple.yaml
-
-# Scripts loaded immediately after alerts to ensure button IDs are available
-script: !include_dir_merge_list scripts/
 
 <<: !include components/calibration.yaml
 <<: !include components/selects.yaml
 <<: !include components/controls.yaml
+<<: !include components/outputs.yaml
 <<: !include components/time.yaml
 <<: !include components/communication.yaml
-<<: !include components/outputs.yaml
 <<: !include components/sensors.yaml
 <<: !include components/display.yaml
 <<: !include components/buttons.yaml
 <<: !include components/lvgl_config.yaml
 <<: !include components/webserver.yaml
+
+# Scripts loaded immediately after alerts to ensure button IDs are available
+script: !include_dir_merge_list scripts/
+
+open_ble:
+  id: ble_gateway
+  enabled: ${ble_enabled}
+  device_name: OpenShrooly
+  manufacturer: OpenShrooly
+  model: "OpenShrooly DevKit"
+  serial_number: DEVKIT
+  hardware_version: revA
+  software_version: "${device_version}"
+  pairing_status_text_sensor: ble_pairing_status
+  paired_devices_text_sensor: ble_paired_devices
+  pairing_display_seconds: 45s
+  max_paired_devices: 4
+  temperature_sensor: temperature
+  humidity_sensor: humidity
+  water_level_sensor: water_level_percent
+  supply_voltage_sensor: vbus_voltage
+  digital_outputs:
+    - temperature_control_enabled
+  humidifier_switch: humidifier_fan
+  analog_outputs:
+    - target_humidity
+    - humidifier_speed
+    - humidity_delta_on
+    - humidity_delta_off
+    - humidifier_min_on_time
+    - humidifier_min_off_time
+  analog_inputs:
+    - fan_tach_internal

@@ -95,3 +95,25 @@ text_sensor:
       } else {
         return {"192.168.4.1"};
       }
+
+  - platform: template
+    name: "BLE Pairing Status"
+    id: ble_pairing_status
+    icon: mdi:bluetooth-connect
+    update_interval: never
+    web_server:
+      sorting_group_id: grp_extras
+      sorting_weight: 10
+    lambda: |-
+      return {"BLE disabled"};
+
+  - platform: template
+    name: "BLE Paired Devices"
+    id: ble_paired_devices
+    icon: mdi:bluetooth
+    update_interval: never
+    web_server:
+      sorting_group_id: grp_extras
+      sorting_weight: 15
+    lambda: |-
+      return {"(none)"};
