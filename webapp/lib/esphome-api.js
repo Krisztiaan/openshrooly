@@ -50,21 +50,30 @@ class ESPHomeAPI {
   async _get(path) {
     try {
       const response = await fetch(`${this.baseUrl}${path}`)
-      if (!response.ok) return null
+      if (!response.ok) {
+        const error = new Error(`GET ${path} failed with status ${response.status}`)
+        error.status = response.status
+        throw error
+      }
       return await response.json()
     } catch (error) {
       console.error(`GET ${path} failed`, error)
-      return null
+      throw error
     }
   }
 
   async _post(path) {
     try {
       const response = await fetch(`${this.baseUrl}${path}`, { method: 'POST' })
-      return response.ok
+      if (!response.ok) {
+        const error = new Error(`POST ${path} failed with status ${response.status}`)
+        error.status = response.status
+        throw error
+      }
+      return true
     } catch (error) {
       console.error(`POST ${path} failed`, error)
-      return false
+      throw error
     }
   }
 
@@ -89,13 +98,25 @@ class ESPHomeAPI {
     return this._get(`/number/${id}`)
   }
 
-  setNumber(id, value) {
-    return this._post(`/number/${id}/set?value=${encodeURIComponent(value)}`)
+  async setNumber(id, value) {
+    try {
+      await this._post(`/number/${id}/set?value=${encodeURIComponent(value)}`)
+      return true
+    } catch (error) {
+      console.error(`Failed to set number ${id}`, error)
+      return false
+    }
   }
 
-  setSwitch(id, state) {
-    const action = state ? 'turn_on' : 'turn_off'
-    return this._post(`/switch/${id}/${action}`)
+  async setSwitch(id, state) {
+    try {
+      const action = state ? 'turn_on' : 'turn_off'
+      await this._post(`/switch/${id}/${action}`)
+      return true
+    } catch (error) {
+      console.error(`Failed to set switch ${id}`, error)
+      return false
+    }
   }
 
   getAllSensors() {
@@ -119,16 +140,28 @@ class ESPHomeAPI {
     return numbers
   }
 
-  pressButton(id) {
-    return this._post(`/button/${id}/press`)
+  async pressButton(id) {
+    try {
+      await this._post(`/button/${id}/press`)
+      return true
+    } catch (error) {
+      console.error(`Failed to press button ${id}`, error)
+      return false
+    }
   }
 
   getSelect(id) {
     return this._get(`/select/${id}`)
   }
 
-  setSelect(id, value) {
-    return this._post(`/select/${id}/set?option=${encodeURIComponent(value)}`)
+  async setSelect(id, value) {
+    try {
+      await this._post(`/select/${id}/set?option=${encodeURIComponent(value)}`)
+      return true
+    } catch (error) {
+      console.error(`Failed to set select ${id}`, error)
+      return false
+    }
   }
 
   getBinarySensor(id) {

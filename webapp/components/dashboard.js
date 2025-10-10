@@ -344,6 +344,10 @@ export function Dashboard() {
     } catch (error) {
       console.error('Snapshot failed', error)
       setConnection({ status: 'offline', detail: 'Device unreachable. Showing last known readings.' })
+      if (!initialSnapshotTaken.current) {
+        initialSnapshotTaken.current = true
+        setLoading(false)
+      }
       if (!silent) {
         setBanner({ tone: 'critical', message: 'Could not reach the device. Controls are disabled until the connection returns.' })
       }
@@ -473,13 +477,19 @@ export function Dashboard() {
     setEntities((prev) => ({ ...prev, [key]: { ...(prev[key] || {}), value: numericValue, state: numericValue } }))
     if (debounceTimers.current[key]) clearTimeout(debounceTimers.current[key])
     debounceTimers.current[key] = setTimeout(async () => {
-      await api.setNumber(id, numericValue)
+      const ok = await api.setNumber(id, numericValue)
+      if (!ok) {
+        setBanner({ tone: 'critical', message: `Failed to update ${id.replace(/_/g, ' ')}. Please try again.` })
+      }
     }, 250)
   }
 
   const handleButtonClick = async (buttonId) => {
     if (blockControlsIfUnavailable()) return
-    await api.pressButton(buttonId)
+    const ok = await api.pressButton(buttonId)
+    if (!ok) {
+      setBanner({ tone: 'critical', message: `Failed to run action ${buttonId.replace(/_/g, ' ')}.` })
+    }
   }
 
   const handleSwitchChange = async (id, checked) => {
@@ -489,13 +499,20 @@ export function Dashboard() {
       ...prev,
       [key]: { ...(prev[key] || {}), state: checked ? 'ON' : 'OFF', value: checked },
     }))
-    await api.setSwitch(id, checked)
+    const ok = await api.setSwitch(id, checked)
+    if (!ok) {
+      setBanner({ tone: 'critical', message: `Failed to update ${id.replace(/_/g, ' ')}.` })
+    }
   }
 
   const handleSelectChange = async (id, option) => {
     if (blockControlsIfUnavailable()) return
-    await api.setSelect(id, option)
-    setEntities((prev) => ({ ...prev, [`select-${id}`]: { ...(prev[`select-${id}`] || {}), state: option } }))
+    const ok = await api.setSelect(id, option)
+    if (ok) {
+      setEntities((prev) => ({ ...prev, [`select-${id}`]: { ...(prev[`select-${id}`] || {}), state: option } }))
+    } else {
+      setBanner({ tone: 'critical', message: `Failed to update ${id.replace(/_/g, ' ')}.` })
+    }
   }
 
   const handleTimezoneChange = async (tz) => {
@@ -1122,7 +1139,7 @@ export function Dashboard() {
           <span className=${`connection-pill ${connectionMeta.tone}`}>
             <span className="pill-indicator"></span>${connectionMeta.label}
           </span>
-          <button className="ghost-button" onClick=${manualRefresh}>Sync now</button>
+          <button className="ghost-button" disabled=${controlsDisabled} onClick=${manualRefresh}>Sync now</button>
           <select className="header-select" value=${timezone} disabled=${controlsDisabled} onChange=${(event) => handleTimezoneChange(event.target.value)}>
             ${timezoneGroups.map(
               (group) => html`<optgroup label=${group.label}>
