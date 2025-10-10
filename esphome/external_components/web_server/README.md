@@ -5,22 +5,19 @@ This is a modified version of ESPHome's built-in `web_server` component that add
 ## Features
 
 - All original ESPHome web_server functionality preserved
-- Embeds Next.js build chunks directly in firmware as gzip-compressed byte arrays
-- Serves static files from PROGMEM (flash memory, not RAM)
-- Supports Next.js static exports
-- Routes `/app/*` and `/_next/*` to embedded files
-- Falls back to `index.html` for SPA routing
-- Captive portal compatible
+- Embeds static HTML/CSS/JS assets directly into firmware as gzip-compressed byte arrays
+- Serves files from flash memory (PROGMEM), so no LittleFS upload step is required
+- Routes `/app/*` requests to the embedded dashboard and falls back to `index.html` for SPA routing
+- Captive portal compatible — the ESPHome UI at `/` continues to work as before
 
 ## How It Works
 
-Unlike the standard approach using LittleFS, this component embeds static files directly into the firmware at compile time:
+Unlike the standard LittleFS approach, this component embeds static dashboard files while compiling the firmware:
 
-1. Next.js app is built to generate static output
-2. `embed_static_files.py` script processes the build output
-3. Script generates `static_files.h` and `static_files.cpp` with embedded, gzip-compressed file data
-4. Files are stored in flash memory using PROGMEM attribute
-5. Web server serves files directly from flash
+1. Prepare or update the web assets under `webapp/` (the current dashboard uses native Preact + HTM modules).
+2. Run `embed_static_files.py` to gzip the assets and regenerate `static_files.h/.cpp`.
+3. Point `app_html_include` at the dashboard HTML (`webapp/index.html`) so the base page is bundled.
+4. Build the firmware — the assets are linked into flash and served straight from PROGMEM.
 
 ## Usage
 
@@ -35,68 +32,25 @@ web_server:
 
 ## Build Workflow
 
-### 1. Configure Next.js
+### 1. Update the dashboard assets
 
-Configure your `next.config.js` for static export with the `/app` base path:
+Edit the files in `webapp/` (`index.html`, `app.js`, `styles/app.css`, `components/`, `vendor/`, etc.). The dashboard now ships as native ES modules, so you can develop by opening `index.html` with any static file server—no bundler step is required.
 
-```javascript
-/** @type {import('next').NextConfig} */
-const nextConfig = {
-  output: 'export',
-  basePath: '/app',
-  trailingSlash: true,
-}
+### 2. Embed the static files
 
-module.exports = nextConfig
-```
-
-### 2. Build Next.js Application
+From the repository root run:
 
 ```bash
-cd webapp
-npm run build
+python3 esphome/external_components/web_server/embed_static_files.py \
+  webapp \
+  esphome/external_components/web_server/static_files.h \
+  esphome/external_components/web_server/static_files.cpp \
+  app
 ```
 
-This generates the static output in `webapp/out/`.
+The optional fourth argument controls the URL prefix; using `app` keeps all assets available under `/app/*`, matching the paths referenced in `index.html`.
 
-### 3. Embed Static Files
-
-Run the embedding script to generate C++ files with embedded chunks:
-
-```bash
-python3 external_components/web_server/embed_static_files.py \
-  webapp/out \
-  external_components/web_server/static_files.h \
-  external_components/web_server/static_files.cpp
-```
-
-The script will:
-- Read and gzip-compress each file from the Next.js build
-- Generate C++ byte arrays stored in PROGMEM
-- Create a lookup table for the web server to find files by URL
-- Output compression statistics
-
-### 4. Update File List
-
-When Next.js rebuilds with different chunk hashes, update the file list in `embed_static_files.py`:
-
-```python
-STATIC_FILES = {
-    "css": [
-        "_next/static/css/ea5220eeb0d2cb40.css",  # Update hash here
-    ],
-    "js": [
-        "_next/static/chunks/webpack-060329e99419b364.js",  # Update hashes
-        "_next/static/chunks/4bd1b696-c023c6e3521b1417.js",
-        "_next/static/chunks/255-0c3faaf82bb76988.js",
-        "_next/static/chunks/main-app-2d64801452f356c9.js",
-        "_next/static/chunks/app/page-b871aa359255909d.js",
-        "_next/static/chunks/polyfills-42372ed130431b0a.js",
-    ],
-}
-```
-
-### 5. Compile and Upload
+### 3. Compile and upload
 
 ```bash
 source ~/dev/esphome/.venv/bin/activate
@@ -118,5 +72,5 @@ This approach embeds files in firmware instead of using LittleFS because:
 The captive portal continues to work as normal. The root path `/` still serves the ESPHome web interface, while `/app/*` serves your Next.js application.
 
 - `/` - ESPHome web interface (captive portal redirects here)
-- `/app/` - Your Next.js application
+- `/app/` - The embedded dashboard
 - All other ESPHome API endpoints remain functional

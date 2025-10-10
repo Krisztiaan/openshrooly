@@ -7,7 +7,6 @@
 namespace esphome {
 namespace web_server {
 
-// Static file data structures
 struct StaticFile {
     const uint8_t* data;
     size_t size;
@@ -29,9 +28,16 @@ extern const uint8_t STATIC_FILE_5_DATA[];
 extern const size_t STATIC_FILE_5_SIZE;
 extern const uint8_t STATIC_FILE_6_DATA[];
 extern const size_t STATIC_FILE_6_SIZE;
+extern const uint8_t STATIC_FILE_7_DATA[];
+extern const size_t STATIC_FILE_7_SIZE;
+extern const uint8_t STATIC_FILE_8_DATA[];
+extern const size_t STATIC_FILE_8_SIZE;
+extern const uint8_t STATIC_FILE_9_DATA[];
+extern const size_t STATIC_FILE_9_SIZE;
 
 extern const StaticFile STATIC_FILES[];
 extern const size_t STATIC_FILES_COUNT;
 
 }  // namespace web_server
 }  // namespace esphome
+
