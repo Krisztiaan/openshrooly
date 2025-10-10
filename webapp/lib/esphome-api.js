@@ -1,6 +1,9 @@
 const DEFAULT_NUMBER_IDS = [
   'target_humidity',
+  'humidity__hysteresis',
   'humidifier__speed',
+  'temperature__target',
+  'temperature__hysteresis',
   'temperature__minimum',
   'temperature__maximum',
   'air_exchange__period__min_',
@@ -13,6 +16,20 @@ const DEFAULT_NUMBER_IDS = [
   'green_led_intensity',
   'blue_led_intensity',
 ]
+
+const DEFAULT_SWITCH_IDS = ['humidifier', 'air_exchange', 'temperature_control_enabled', 'ble_enabled']
+const DEFAULT_BINARY_SENSOR_IDS = [
+  'humidifier_on',
+  'air_exchange_on',
+  'heat_requested',
+  'water_calibrated',
+  'alert__humidity_control_failure',
+  'alert__i2c_communication_failure',
+  'alert__fan_start_failure',
+  'alert__temperature_too_low',
+  'alert__temperature_too_high',
+]
+const DEFAULT_TEXT_SENSOR_IDS = ['licenses']
 
 class ESPHomeAPI {
   constructor(baseUrl = null) {
@@ -46,6 +63,15 @@ class ESPHomeAPI {
 
   getSwitch(id) {
     return this._get(`/switch/${id}`)
+  }
+
+  async getSwitchStates(ids = DEFAULT_SWITCH_IDS) {
+    const results = await Promise.all(ids.map((id) => this.getSwitch(id)))
+    const switches = {}
+    results.forEach((result, index) => {
+      if (result) switches[`switch-${ids[index]}`] = result
+    })
+    return switches
   }
 
   getNumber(id) {
@@ -94,6 +120,71 @@ class ESPHomeAPI {
     return this._post(`/select/${id}/set?option=${encodeURIComponent(value)}`)
   }
 
+  getBinarySensor(id) {
+    return this._get(`/binary_sensor/${id}`)
+  }
+
+  async getBinarySensors(ids = DEFAULT_BINARY_SENSOR_IDS) {
+    const results = await Promise.all(ids.map((id) => this.getBinarySensor(id)))
+    const sensors = {}
+    results.forEach((result, index) => {
+      if (result) sensors[`binary_sensor-${ids[index]}`] = result
+    })
+    return sensors
+  }
+
+  getTextSensor(id) {
+    return this._get(`/text_sensor/${id}`)
+  }
+
+  async getTextSensors(ids = DEFAULT_TEXT_SENSOR_IDS) {
+    const results = await Promise.all(ids.map((id) => this.getTextSensor(id)))
+    const sensors = {}
+    results.forEach((result, index) => {
+      if (result) sensors[`text_sensor-${ids[index]}`] = result
+    })
+    return sensors
+  }
+
+  async fetchSnapshot({
+    numberIds = DEFAULT_NUMBER_IDS,
+    switchIds = DEFAULT_SWITCH_IDS,
+    sensorIds = ['temperature', 'current_temperature', 'humidity', 'current_humidity', 'water_level_percent', 'water_level'],
+    binarySensorIds = DEFAULT_BINARY_SENSOR_IDS,
+    textSensorIds = DEFAULT_TEXT_SENSOR_IDS,
+    selectIds = ['timezone_select'],
+  } = {}) {
+    const [numbers, switches, sensors, binarySensors, textSensors, selects] = await Promise.all([
+      this.getAllNumbers(numberIds),
+      this.getSwitchStates(switchIds),
+      Promise.all(sensorIds.map((id) => this.getSensor(id))).then((values) => {
+        const out = {}
+        values.forEach((value, idx) => {
+          if (value) out[`sensor-${sensorIds[idx]}`] = value
+        })
+        return out
+      }),
+      this.getBinarySensors(binarySensorIds),
+      this.getTextSensors(textSensorIds),
+      Promise.all(selectIds.map((id) => this.getSelect(id))).then((values) => {
+        const out = {}
+        values.forEach((value, idx) => {
+          if (value) out[`select-${selectIds[idx]}`] = value
+        })
+        return out
+      }),
+    ])
+
+    return {
+      ...numbers,
+      ...switches,
+      ...sensors,
+      ...binarySensors,
+      ...textSensors,
+      ...selects,
+    }
+  }
+
   subscribeToEvents(onEvent) {
     try {
       const eventSource = new EventSource(`${this.baseUrl}/events`)
@@ -105,7 +196,6 @@ class ESPHomeAPI {
           console.error('Event parse failed', error)
         }
       })
-      eventSource.onerror = (error) => console.error('EventSource error', error)
       return eventSource
     } catch (error) {
       console.error('EventSource setup failed', error)

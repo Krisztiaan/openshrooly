@@ -4,7 +4,7 @@ This directory hosts the build-less dashboard served directly from the ESPHome w
 
 ## Development
 
-Open `index.html` in a modern browser via a local web server, or point it to a live device. No bundler is required—just edit the files and reload.
+Open `index.html` in a modern browser via a local web server, or point it to a live device. No bundler is required—just edit the files and reload. The dashboard registers a service worker and PWA manifest, so running it from `http://localhost` mirrors the offline behaviour baked into the firmware.
 
 ```
 python3 -m http.server -d webapp

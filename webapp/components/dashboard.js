@@ -1,5 +1,5 @@
 import { h } from '../vendor/preact.module.js'
-import { useState, useEffect, useRef } from '../vendor/hooks.module.js'
+import { useState, useEffect, useRef, useMemo } from '../vendor/hooks.module.js'
 import htm from '../vendor/htm.module.js'
 import { api } from '../lib/esphome-api.js'
 import { SensorCard } from './sensor-card.js'
@@ -8,11 +8,11 @@ import { StatusCard } from './status-card.js'
 const html = htm.bind(h)
 
 const ALERTS = [
-  { id: 'humidity_control_failure', msg: 'Humidity control failure' },
-  { id: 'i2c_communication_failure', msg: 'Sensor communication error' },
-  { id: 'fan_start_failure', msg: 'Fan failed to start' },
-  { id: 'temperature_too_low', msg: 'Temperature too low' },
-  { id: 'temperature_too_high', msg: 'Temperature too high' },
+  { id: 'humidity_control_failure', msg: 'Humidity control failure detected' },
+  { id: 'i2c_communication_failure', msg: 'Sensor communication issue' },
+  { id: 'fan_start_failure', msg: 'Air exchange fan failed to start' },
+  { id: 'temperature_too_low', msg: 'Temperature is below the safe range' },
+  { id: 'temperature_too_high', msg: 'Temperature is above the safe range' },
 ]
 
 const TIMEZONE_OPTIONS = [
@@ -26,7 +26,21 @@ const TIMEZONE_OPTIONS = [
   { value: 'Asia/Tokyo', label: 'Tokyo' },
 ]
 
-const timeOptions = Array.from({ length: 48 }, (_, i) => i * 0.5)
+const CONNECTION_META = {
+  connecting: { label: 'Connecting', tone: 'calm', detail: 'Looking for the OpenShrooly on your network…' },
+  streaming: { label: 'Live', tone: 'positive', detail: 'Realtime updates are active.' },
+  polling: { label: 'Snapshots', tone: 'warning', detail: 'Realtime channel unavailable — refreshing every 5 seconds.' },
+  offline: { label: 'Offline', tone: 'critical', detail: 'Device unreachable. Join the same Wi‑Fi as the OpenShrooly to resume.' },
+}
+
+const REFRESH_INTERVAL_MS = 5000
+const RECONNECT_INTERVAL_MS = 15000
+
+const formatTime = (hour) => {
+  const h = Math.floor(hour)
+  const m = Math.round((hour - h) * 60)
+  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`
+}
 
 const rgbToHex = (r, g, b) => {
   const toHex = (n) => {
@@ -47,17 +61,10 @@ const hexToRgb = (hex) => {
     : { r: 0, g: 0, b: 0 }
 }
 
-const formatTime = (hour) => {
-  const h = Math.floor(hour)
-  const m = Math.round((hour - h) * 60)
-  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`
-}
-
 export function Dashboard() {
   const [entities, setEntities] = useState({})
   const [loading, setLoading] = useState(true)
-  const [lastUpdate, setLastUpdate] = useState(new Date())
-  const [modal, setModal] = useState({ type: null })
+  const [modal, setModal] = useState(null)
   const [timezone, setTimezone] = useState('America/Denver')
   const [calibrationSuccess, setCalibrationSuccess] = useState(false)
   const [showLicense, setShowLicense] = useState(false)
@@ -65,57 +72,192 @@ export function Dashboard() {
   const [otaProgress, setOtaProgress] = useState(0)
   const [otaStatus, setOtaStatus] = useState('idle')
   const [otaMessage, setOtaMessage] = useState('')
+  const [connection, setConnection] = useState({ status: 'connecting', detail: CONNECTION_META.connecting.detail })
+  const [lastUpdate, setLastUpdate] = useState(null)
+  const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true)
+  const [banner, setBanner] = useState(null)
 
   const debounceTimers = useRef({})
+  const eventSourceRef = useRef(null)
+  const pollTimerRef = useRef(null)
+  const reconnectTimerRef = useRef(null)
+  const initialSnapshotTaken = useRef(false)
 
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const numbers = await api.getAllNumbers()
-        setEntities((prev) => ({ ...prev, ...numbers }))
-      } catch (_) {
-        // ignore, event stream will hydrate
-      }
+  const mergeEntities = (patch) => {
+    setEntities((prev) => ({ ...prev, ...patch }))
+  }
 
-      try {
-        const tz = await api.getSelect('timezone_select')
-        if (tz?.state) setTimezone(tz.state)
-      } catch (_) {
-        // ignore
-      }
-
-      setLoading(false)
+  const stopEventStream = () => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close()
+      eventSourceRef.current = null
     }
+  }
 
-    fetchData()
+  const stopPolling = () => {
+    if (pollTimerRef.current) {
+      clearInterval(pollTimerRef.current)
+      pollTimerRef.current = null
+    }
+  }
+
+  const stopReconnect = () => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
+    }
+  }
+
+  const stopAllConnectivity = () => {
+    stopEventStream()
+    stopPolling()
+    stopReconnect()
+  }
+
+  const refreshSnapshot = async ({ silent = false } = {}) => {
+    try {
+      const snapshot = await api.fetchSnapshot()
+      mergeEntities(snapshot)
+      const tz = snapshot['select-timezone_select']?.state
+      if (tz) setTimezone(tz)
+      setLastUpdate(new Date())
+      if (!initialSnapshotTaken.current) {
+        initialSnapshotTaken.current = true
+        setLoading(false)
+      }
+      if (!silent) setBanner({ tone: 'positive', message: 'Dashboard updated just now.' })
+      return true
+    } catch (error) {
+      console.error('Snapshot failed', error)
+      if (!silent) {
+        setBanner({ tone: 'critical', message: 'Could not refresh from the device. Check the connection and try again.' })
+      }
+      return false
+    }
+  }
+
+  const scheduleReconnect = () => {
+    stopReconnect()
+    reconnectTimerRef.current = setTimeout(() => {
+      if (!isOnline) return
+      startEventStream({ retry: true })
+    }, RECONNECT_INTERVAL_MS)
+  }
+
+  const startPolling = (detail = CONNECTION_META.polling.detail) => {
+    stopEventStream()
+    if (!pollTimerRef.current) {
+      pollTimerRef.current = setInterval(() => {
+        refreshSnapshot({ silent: true })
+      }, REFRESH_INTERVAL_MS)
+    }
+    setConnection({ status: 'polling', detail })
+    refreshSnapshot({ silent: true })
+    scheduleReconnect()
+  }
+
+  const startEventStream = ({ retry = false } = {}) => {
+    stopEventStream()
+    if (!isOnline) return
+
+    const detail = retry ? 'Re-establishing realtime connection…' : CONNECTION_META.connecting.detail
+    setConnection({ status: 'connecting', detail })
 
     const eventSource = api.subscribeToEvents((event) => {
       if (!event.id) return
-      setEntities((prev) => ({
-        ...prev,
+      mergeEntities({
         [event.id]: {
           value: event.value !== undefined ? event.value : event.state === 'ON',
           state: event.state,
         },
-      }))
+      })
+      if (event.id === 'select-timezone_select' && event.state) {
+        setTimezone(event.state)
+      }
       setLastUpdate(new Date())
-      if (event.id === 'select-timezone_select') setTimezone(event.state)
+      setBanner(null)
     })
 
+    if (!eventSource) {
+      startPolling('Realtime channel unavailable. Falling back to snapshots.')
+      return
+    }
+
+    eventSourceRef.current = eventSource
+    eventSource.onopen = () => {
+      stopPolling()
+      stopReconnect()
+      setConnection({ status: 'streaming', detail: CONNECTION_META.streaming.detail })
+      if (!initialSnapshotTaken.current) {
+        refreshSnapshot({ silent: true })
+      }
+    }
+    eventSource.onerror = () => {
+      console.warn('EventSource error — switching to snapshot mode')
+      startPolling('Realtime channel interrupted. Using 5 s snapshots while retrying…')
+    }
+  }
+
+  const handleOfflineChange = (online) => {
+    setIsOnline(online)
+    if (!online) {
+      stopAllConnectivity()
+      setConnection({ status: 'offline', detail: CONNECTION_META.offline.detail })
+    }
+  }
+
+  useEffect(() => {
+    const onOnline = () => handleOfflineChange(true)
+    const onOffline = () => handleOfflineChange(false)
+    window.addEventListener('online', onOnline)
+    window.addEventListener('offline', onOffline)
     return () => {
-      if (eventSource) eventSource.close()
-      Object.values(debounceTimers.current).forEach((timer) => clearTimeout(timer))
+      window.removeEventListener('online', onOnline)
+      window.removeEventListener('offline', onOffline)
     }
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const bootstrap = async () => {
+      const ok = await refreshSnapshot({ silent: true })
+      if (cancelled) return
+      if (!ok) setConnection({ status: 'connecting', detail: 'Retrying snapshot…' })
+      startEventStream()
+    }
+    bootstrap()
+    return () => {
+      cancelled = true
+      stopAllConnectivity()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isOnline) {
+      setBanner({ tone: 'warning', message: 'You appear to be offline. The dashboard is running on cached data.' })
+      return
+    }
+
+    setBanner(null)
+    stopAllConnectivity()
+    refreshSnapshot({ silent: true })
+    startEventStream({ retry: true })
+  }, [isOnline])
+
+  useEffect(() => {
+    if (!banner) return
+    const timer = setTimeout(() => setBanner(null), 6000)
+    return () => clearTimeout(timer)
+  }, [banner])
 
   const handleNumberChange = (id, value) => {
     const numericValue = Number(value)
     if (Number.isNaN(numericValue)) return
-    setEntities((prev) => ({ ...prev, [id]: { ...prev[id], value: numericValue } }))
-    if (debounceTimers.current[id]) clearTimeout(debounceTimers.current[id])
-    debounceTimers.current[id] = setTimeout(async () => {
-      const numberId = id.replace('number-', '')
-      await api.setNumber(numberId, numericValue)
+    const key = `number-${id}`
+    setEntities((prev) => ({ ...prev, [key]: { ...(prev[key] || {}), value: numericValue, state: numericValue } }))
+    if (debounceTimers.current[key]) clearTimeout(debounceTimers.current[key])
+    debounceTimers.current[key] = setTimeout(async () => {
+      await api.setNumber(id, numericValue)
     }, 250)
   }
 
@@ -124,16 +266,17 @@ export function Dashboard() {
   }
 
   const handleSwitchChange = async (id, checked) => {
+    const key = `switch-${id}`
     setEntities((prev) => ({
       ...prev,
-      [id]: { ...prev[id], state: checked ? 'ON' : 'OFF', value: checked },
+      [key]: { ...(prev[key] || {}), state: checked ? 'ON' : 'OFF', value: checked },
     }))
-    const switchId = id.replace('switch-', '')
-    await api.setSwitch(switchId, checked)
+    await api.setSwitch(id, checked)
   }
 
-  const handleSelectChange = async (selectId, value) => {
-    await api.setSelect(selectId, value)
+  const handleSelectChange = async (id, option) => {
+    await api.setSelect(id, option)
+    setEntities((prev) => ({ ...prev, [`select-${id}`]: { ...(prev[`select-${id}`] || {}), state: option } }))
   }
 
   const handleTimezoneChange = async (tz) => {
@@ -143,27 +286,28 @@ export function Dashboard() {
 
   const handleOtaUpload = async () => {
     if (!otaFile) {
-      setOtaMessage('Please select a firmware file')
+      setOtaMessage('Please select a firmware file before uploading.')
       setOtaStatus('error')
       return
     }
 
     setOtaStatus('uploading')
     setOtaProgress(0)
-    setOtaMessage('Uploading firmware...')
+    setOtaMessage('Uploading firmware…')
 
     try {
       const formData = new FormData()
       formData.append('file', otaFile)
-
       const xhr = new XMLHttpRequest()
-      xhr.upload.addEventListener('progress', (e) => {
-        if (e.lengthComputable) setOtaProgress((e.loaded / e.total) * 100)
+      xhr.upload.addEventListener('progress', (event) => {
+        if (event.lengthComputable) {
+          setOtaProgress((event.loaded / event.total) * 100)
+        }
       })
       xhr.addEventListener('load', () => {
         if (xhr.status === 200) {
           setOtaStatus('success')
-          setOtaMessage('Firmware uploaded successfully! Device will restart...')
+          setOtaMessage('Firmware uploaded. The device will reboot shortly.')
           setOtaProgress(100)
           setTimeout(() => {
             setOtaStatus('idle')
@@ -178,7 +322,7 @@ export function Dashboard() {
       })
       xhr.addEventListener('error', () => {
         setOtaStatus('error')
-        setOtaMessage('Upload failed: Network error')
+        setOtaMessage('Upload failed due to a network error.')
       })
       xhr.open('POST', '/update')
       xhr.send(formData)
@@ -188,361 +332,395 @@ export function Dashboard() {
     }
   }
 
-  const handleColorChange = (hex) => {
-    const rgb = hexToRgb(hex)
-    handleNumberChange('number-red_led_intensity', rgb.r)
-    handleNumberChange('number-green_led_intensity', rgb.g)
-    handleNumberChange('number-blue_led_intensity', rgb.b)
+  const manualRefresh = () => {
+    refreshSnapshot({ silent: false })
   }
 
-  const getSensor = (id) => entities[`sensor-${id}`]?.value
-  const getNumber = (id) => entities[`number-${id}`]?.value
-  const getSwitchState = (id) => entities[`switch-${id}`]?.state === 'ON' || entities[`switch-${id}`]?.value === true
+  const connectionMeta = CONNECTION_META[connection.status] || CONNECTION_META.connecting
 
-  if (loading) {
-    return html`<div className="loading-screen"><div className="spinner"></div><div>Connecting to OpenShrooly...</div></div>`
+  const getNumeric = (prefix, id, fallback = 0) => {
+    const entity = entities[`${prefix}-${id}`]
+    const raw = entity?.value ?? entity?.state
+    const value = typeof raw === 'number' ? raw : parseFloat(raw)
+    return Number.isFinite(value) ? value : fallback
   }
 
-  const alerts = ALERTS.filter((a) => entities[`binary_sensor-alert__${a.id}`]?.value === true)
+  const getBoolean = (prefix, id) => {
+    const entity = entities[`${prefix}-${id}`]
+    if (!entity) return false
+    if (typeof entity.value === 'boolean') return entity.value
+    if (typeof entity.state === 'boolean') return entity.state
+    return entity.state === 'ON'
+  }
 
-  const temp = Number(getSensor('temperature') ?? getSensor('current_temperature') ?? 0)
-  const humidity = Number(getSensor('humidity') ?? getSensor('current_humidity') ?? 0)
-  const waterLevel = Number(getSensor('water_level_percent') ?? getSensor('water_level') ?? 0)
-  const targetHumidity = Number(getNumber('target_humidity') ?? 70)
-  const humidityHysteresis = Number(getNumber('humidity__hysteresis') ?? 2)
+  const getText = (id) => entities[`text_sensor-${id}`]?.state ?? ''
 
-  const tempControlEnabled = getSwitchState('temperature_control_enabled')
-  const tempTarget = Number(getNumber('temperature__target') ?? 22)
-  const tempHysteresis = Number(getNumber('temperature__hysteresis') ?? 1)
+  const humidity = useMemo(() => getNumeric('sensor', 'humidity') || getNumeric('sensor', 'current_humidity'), [entities])
+  const targetHumidity = useMemo(() => getNumeric('number', 'target_humidity', 70), [entities])
+  const humidityHysteresis = useMemo(() => getNumeric('number', 'humidity__hysteresis', 2), [entities])
+
+  const temperature = useMemo(() => getNumeric('sensor', 'temperature') || getNumeric('sensor', 'current_temperature'), [entities])
+  const tempTarget = useMemo(() => getNumeric('number', 'temperature__target', 22), [entities])
+  const tempHysteresis = useMemo(() => getNumeric('number', 'temperature__hysteresis', 1), [entities])
+  const tempControlEnabled = useMemo(() => getBoolean('switch', 'temperature_control_enabled'), [entities])
   const tempMin = tempControlEnabled ? tempTarget - tempHysteresis : 0
   const tempMax = tempControlEnabled ? tempTarget + tempHysteresis : 0
 
-  const humidifierOn = getSwitchState('humidifier') || entities['binary_sensor-humidifier_on']?.value === true
-  const airExchangeOn = getSwitchState('air_exchange') || entities['binary_sensor-air_exchange_on']?.value === true
-  const heatRequested = entities['binary_sensor-heat_requested']?.value === true
+  const waterLevel = useMemo(() => getNumeric('sensor', 'water_level_percent', getNumeric('sensor', 'water_level', 0)), [entities])
 
-  const lightsSunrise = Number(getNumber('lights__sunrise_hour') ?? 8)
-  const lightsDuration = Number(getNumber('lights__duration__hours_') ?? 12)
-  const lightsSunset = (lightsSunrise + lightsDuration) % 24
-  const lightsOn = (() => {
-    const now = new Date()
-    const currentHour = now.getHours() + now.getMinutes() / 60
-    return lightsSunrise < lightsSunset
-      ? currentHour >= lightsSunrise && currentHour < lightsSunset
-      : currentHour >= lightsSunrise || currentHour < lightsSunset
-  })()
-  const luxValue = Number(getNumber('white_led_intensity') ?? 0)
-  const currentColor = rgbToHex(
-    Number(getNumber('red_led_intensity') ?? 0),
-    Number(getNumber('green_led_intensity') ?? 0),
-    Number(getNumber('blue_led_intensity') ?? 0),
+  const lightsSunrise = useMemo(() => getNumeric('number', 'lights__sunrise_hour', 8), [entities])
+  const lightsDuration = useMemo(() => getNumeric('number', 'lights__duration__hours_', 12), [entities])
+  const lightsSunset = useMemo(() => (lightsSunrise + lightsDuration) % 24, [lightsSunrise, lightsDuration])
+  const luxValue = useMemo(() => getNumeric('number', 'white_led_intensity', 0), [entities])
+  const currentColor = useMemo(
+    () =>
+      rgbToHex(
+        getNumeric('number', 'red_led_intensity', 0),
+        getNumeric('number', 'green_led_intensity', 0),
+        getNumeric('number', 'blue_led_intensity', 0),
+      ),
+    [entities]
   )
 
+  const humidifierOn = useMemo(() => getBoolean('switch', 'humidifier') || getBoolean('binary_sensor', 'humidifier_on'), [entities])
+  const airExchangeOn = useMemo(
+    () => getBoolean('switch', 'air_exchange') || getBoolean('binary_sensor', 'air_exchange_on'),
+    [entities]
+  )
+  const heatRequested = useMemo(() => getBoolean('binary_sensor', 'heat_requested'), [entities])
+  const bleEnabled = useMemo(() => getBoolean('switch', 'ble_enabled'), [entities])
+  const timezoneLabel = useMemo(() => TIMEZONE_OPTIONS.find((tz) => tz.value === timezone)?.label ?? timezone, [timezone])
+  const licensesText = useMemo(() => getText('licenses') || 'License list not yet reported by the device.', [entities])
+
+  const alerts = useMemo(
+    () => ALERTS.filter((alert) => getBoolean('binary_sensor', `alert__${alert.id}`)),
+    [entities]
+  )
+
+  if (loading) {
+    return html`
+      <div className="loading-screen">
+        <div className="spinner"></div>
+        <p>Connecting to OpenShrooly…</p>
+      </div>
+    `
+  }
+
   const renderModal = () => {
-    switch (modal.type) {
+    if (!modal) return null
+
+    const closeModal = () => {
+      setModal(null)
+      setCalibrationSuccess(false)
+    }
+
+    const modalBase = (title, content) =>
+      html`
+        <div className="modal-overlay" onClick=${closeModal}>
+          <div className="modal" onClick=${(event) => event.stopPropagation()}>
+            <header className="modal-header">
+              <h2>${title}</h2>
+              <button className="icon-button" aria-label="Close" onClick=${closeModal}>×</button>
+            </header>
+            <div className="modal-content">${content}</div>
+          </div>
+        </div>
+      `
+
+    switch (modal) {
       case 'humidity': {
         const presets = [
-          { label: 'Precision (70% ±1%)', target: 70, hysteresis: 1 },
-          { label: 'Balanced (68% ±2%)', target: 68, hysteresis: 2 },
-          { label: 'Eco (65% ±3%)', target: 65, hysteresis: 3 },
+          { label: 'Precision · 70% ±1%', target: 70, hysteresis: 1 },
+          { label: 'Balanced · 68% ±2%', target: 68, hysteresis: 2 },
+          { label: 'Eco · 65% ±3%', target: 65, hysteresis: 3 },
         ]
-        return html`
-          <div className="modal-overlay" onClick=${() => setModal({ type: null })}>
-            <div className="modal" onClick=${(e) => e.stopPropagation()}>
-              <button className="modal-close-x" onClick=${() => setModal({ type: null })}>×</button>
-              <h2>💧 Humidity Control</h2>
-              <div className="modal-content">
-                <div className="control-group">
-                  <label>Target Humidity (%)</label>
-                  <input
-                    type="number"
-                    min="60"
-                    max="95"
-                    step="0.5"
-                    className="control-select"
-                    value=${targetHumidity}
-                    onInput=${(e) => handleNumberChange('number-target_humidity', e.target.value)}
-                  />
-                </div>
-                <div className="control-group">
-                  <label>Hysteresis (±%)</label>
-                  <input
-                    type="number"
-                    min="0"
-                    max="5"
-                    step="0.25"
-                    className="control-select"
-                    value=${humidityHysteresis}
-                    onInput=${(e) => handleNumberChange('number-humidity__hysteresis', e.target.value)}
-                  />
-                </div>
-                <div className="control-group">
-                  <label>Quick Presets</label>
-                  <div className="preset-row">
-                    ${presets.map((preset) => html`
-                      <button
-                        className="preset-chip"
-                        onClick=${() => {
-                          handleNumberChange('number-target_humidity', preset.target)
-                          handleNumberChange('number-humidity__hysteresis', preset.hysteresis)
-                          setModal({ type: null })
-                        }}
-                      >
-                        ${preset.label}
-                      </button>
-                    `)}
-                  </div>
-                </div>
+        return modalBase(
+          'Humidity Control',
+          html`
+            <div className="input-group">
+              <label for="targetHumidity">Target humidity (%)</label>
+              <input
+                id="targetHumidity"
+                type="number"
+                min="60"
+                max="95"
+                step="0.5"
+                value=${targetHumidity}
+                onInput=${(event) => handleNumberChange('target_humidity', event.target.value)}
+              />
+            </div>
+            <div className="input-group">
+              <label for="humidityHysteresis">Hysteresis (± %)</label>
+              <input
+                id="humidityHysteresis"
+                type="number"
+                min="0"
+                max="5"
+                step="0.25"
+                value=${humidityHysteresis}
+                onInput=${(event) => handleNumberChange('humidity__hysteresis', event.target.value)}
+              />
+            </div>
+            <div className="input-group">
+              <label>Presets</label>
+              <div className="chip-row">
+                ${presets.map(
+                  (preset) => html`
+                    <button
+                      className="chip-button"
+                      onClick=${() => {
+                        handleNumberChange('target_humidity', preset.target)
+                        handleNumberChange('humidity__hysteresis', preset.hysteresis)
+                        closeModal()
+                      }}
+                    >
+                      ${preset.label}
+                    </button>
+                  `,
+                )}
               </div>
             </div>
-          </div>
-        `
+          `,
+        )
       }
       case 'temperature': {
-        return html`
-          <div className="modal-overlay" onClick=${() => setModal({ type: null })}>
-            <div className="modal" onClick=${(e) => e.stopPropagation()}>
-              <button className="modal-close-x" onClick=${() => setModal({ type: null })}>×</button>
-              <h2>🌡️ Temperature Guard</h2>
-              <div className="modal-content">
-                <div className="control-group">
-                  <label>Guard Enabled</label>
-                  <label className="toggle">
-                    <input
-                      type="checkbox"
-                      checked=${tempControlEnabled}
-                      onChange=${(e) => handleSwitchChange('switch-temperature_control_enabled', e.target.checked)}
-                    />
-                    <span>Maintain ${tempTarget.toFixed(1)}°C ± ${tempHysteresis.toFixed(1)}°C</span>
-                  </label>
-                </div>
-                <div className="control-group">
-                  <label>Set Target (°C)</label>
-                  <input
-                    type="number"
-                    min="15"
-                    max="30"
-                    step="0.5"
-                    className="control-select"
-                    value=${tempTarget}
-                    onInput=${(e) => handleNumberChange('number-temperature__target', e.target.value)}
-                  />
-                </div>
-                <div className="control-group">
-                  <label>Hysteresis (°C)</label>
-                  <input
-                    type="number"
-                    min="0"
-                    max="3"
-                    step="0.25"
-                    className="control-select"
-                    value=${tempHysteresis}
-                    onInput=${(e) => handleNumberChange('number-temperature__hysteresis', e.target.value)}
-                  />
-                </div>
+        return modalBase(
+          'Temperature Guard',
+          html`
+            <div className="toggle-row">
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked=${tempControlEnabled}
+                  onChange=${(event) => handleSwitchChange('temperature_control_enabled', event.target.checked)}
+                />
+                <span>Maintain ${tempTarget.toFixed(1)}°C ± ${tempHysteresis.toFixed(1)}°C</span>
+              </label>
+            </div>
+            <div className="input-grid">
+              <div className="input-group">
+                <label for="tempTarget">Target (°C)</label>
+                <input
+                  id="tempTarget"
+                  type="number"
+                  min="15"
+                  max="30"
+                  step="0.5"
+                  value=${tempTarget}
+                  onInput=${(event) => handleNumberChange('temperature__target', event.target.value)}
+                />
+              </div>
+              <div className="input-group">
+                <label for="tempHysteresis">Hysteresis (°C)</label>
+                <input
+                  id="tempHysteresis"
+                  type="number"
+                  min="0"
+                  max="3"
+                  step="0.25"
+                  value=${tempHysteresis}
+                  onInput=${(event) => handleNumberChange('temperature__hysteresis', event.target.value)}
+                />
               </div>
             </div>
-          </div>
-        `
+          `,
+        )
       }
       case 'air': {
-        const period = Number(getNumber('air_exchange__period__min_') ?? 60)
-        const runDuration = Number(getNumber('air_exchange__run_duration__s_') ?? 30)
-        const speed = Number(getNumber('air_exchange__speed') ?? 50)
-        return html`
-          <div className="modal-overlay" onClick=${() => setModal({ type: null })}>
-            <div className="modal" onClick=${(e) => e.stopPropagation()}>
-              <button className="modal-close-x" onClick=${() => setModal({ type: null })}>×</button>
-              <h2>🌬️ Fresh Air Cycle</h2>
-              <div className="modal-content">
-                <div className="control-group">
-                  <label>Cycle Period (minutes)</label>
-                  <input
-                    type="number"
-                    min="5"
-                    max="180"
-                    step="5"
-                    className="control-select"
-                    value=${period}
-                    onInput=${(e) => handleNumberChange('number-air_exchange__period__min_', e.target.value)}
-                  />
-                </div>
-                <div className="control-group">
-                  <label>Run Duration (seconds)</label>
-                  <input
-                    type="number"
-                    min="10"
-                    max="600"
-                    step="5"
-                    className="control-select"
-                    value=${runDuration}
-                    onInput=${(e) => handleNumberChange('number-air_exchange__run_duration__s_', e.target.value)}
-                  />
-                </div>
-                <div className="control-group">
-                  <label>Fan Speed (%)</label>
-                  <input
-                    type="number"
-                    min="10"
-                    max="100"
-                    step="5"
-                    className="control-select"
-                    value=${speed}
-                    onInput=${(e) => handleNumberChange('number-air_exchange__speed', e.target.value)}
-                  />
-                </div>
+        const period = getNumeric('number', 'air_exchange__period__min_', 60)
+        const runDuration = getNumeric('number', 'air_exchange__run_duration__s_', 30)
+        const speed = getNumeric('number', 'air_exchange__speed', 50)
+        return modalBase(
+          'Fresh Air Cycle',
+          html`
+            <div className="input-grid">
+              <div className="input-group">
+                <label for="airPeriod">Cycle period (minutes)</label>
+                <input
+                  id="airPeriod"
+                  type="number"
+                  min="5"
+                  max="180"
+                  step="5"
+                  value=${period}
+                  onInput=${(event) => handleNumberChange('air_exchange__period__min_', event.target.value)}
+                />
+              </div>
+              <div className="input-group">
+                <label for="airDuration">Run duration (seconds)</label>
+                <input
+                  id="airDuration"
+                  type="number"
+                  min="10"
+                  max="600"
+                  step="5"
+                  value=${runDuration}
+                  onInput=${(event) => handleNumberChange('air_exchange__run_duration__s_', event.target.value)}
+                />
               </div>
             </div>
-          </div>
-        `
+            <div className="input-group">
+              <label for="airSpeed">Fan speed (%)</label>
+              <input
+                id="airSpeed"
+                type="number"
+                min="10"
+                max="100"
+                step="5"
+                value=${speed}
+                onInput=${(event) => handleNumberChange('air_exchange__speed', event.target.value)}
+              />
+            </div>
+          `,
+        )
       }
       case 'light': {
-        return html`
-          <div className="modal-overlay" onClick=${() => setModal({ type: null })}>
-            <div className="modal" onClick=${(e) => e.stopPropagation()}>
-              <button className="modal-close-x" onClick=${() => setModal({ type: null })}>×</button>
-              <h2>💡 Lighting Plan</h2>
-              <div className="modal-content">
-                <div className="control-group">
-                  <label>Sunrise</label>
-                  <select
-                    className="control-select"
-                    value=${lightsSunrise}
-                    onChange=${(e) => handleNumberChange('number-lights__sunrise_hour', e.target.value)}
-                  >
-                    ${timeOptions.map((value) => html`<option value=${value}>${formatTime(value)}</option>`) }
-                  </select>
-                </div>
-                <div className="control-group">
-                  <label>Duration (hours)</label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="24"
-                    step="0.25"
-                    className="control-select"
-                    value=${lightsDuration}
-                    onInput=${(e) => handleNumberChange('number-lights__duration__hours_', e.target.value)}
-                  />
-                </div>
-                <div className="control-group">
-                  <label>Canopy Brightness (lux)</label>
-                  <input
-                    type="number"
-                    min="0"
-                    max="4000"
-                    step="10"
-                    className="control-select"
-                    value=${luxValue}
-                    onInput=${(e) => handleNumberChange('number-white_led_intensity', e.target.value)}
-                  />
-                </div>
-                <div className="control-group">
-                  <label>Accent Color</label>
-                  <input
-                    type="color"
-                    className="control-select"
-                    value=${currentColor}
-                    onInput=${(e) => handleColorChange(e.target.value)}
-                  />
-                </div>
-              </div>
+        return modalBase(
+          'Lighting Plan',
+          html`
+            <div className="input-group">
+              <label for="sunriseSelect">Sunrise</label>
+              <select
+                id="sunriseSelect"
+                value=${lightsSunrise}
+                onChange=${(event) => handleNumberChange('lights__sunrise_hour', event.target.value)}
+              >
+                ${Array.from({ length: 48 }, (_, index) => index * 0.5).map(
+                  (value) => html`<option value=${value}>${formatTime(value)}</option>`,
+                )}
+              </select>
             </div>
-          </div>
-        `
+            <div className="input-group">
+              <label for="lightDuration">Duration (hours)</label>
+              <input
+                id="lightDuration"
+                type="number"
+                min="1"
+                max="24"
+                step="0.25"
+                value=${lightsDuration}
+                onInput=${(event) => handleNumberChange('lights__duration__hours_', event.target.value)}
+              />
+            </div>
+            <div className="input-group">
+              <label for="canopyLux">Canopy brightness (lux)</label>
+              <input
+                id="canopyLux"
+                type="number"
+                min="0"
+                max="4000"
+                step="10"
+                value=${luxValue}
+                onInput=${(event) => handleNumberChange('white_led_intensity', event.target.value)}
+              />
+            </div>
+            <div className="input-group">
+              <label for="accentColor">Accent color</label>
+              <input
+                id="accentColor"
+                type="color"
+                value=${currentColor}
+                onInput=${(event) => {
+                  const rgb = hexToRgb(event.target.value)
+                  handleNumberChange('red_led_intensity', rgb.r)
+                  handleNumberChange('green_led_intensity', rgb.g)
+                  handleNumberChange('blue_led_intensity', rgb.b)
+                }}
+              />
+            </div>
+          `,
+        )
       }
       case 'water': {
-        const calibrated = entities['binary_sensor-water_calibrated']?.value === true
-        return html`
-          <div className="modal-overlay" onClick=${() => setModal({ type: null })}>
-            <div className="modal" onClick=${(e) => e.stopPropagation()}>
-              <button className="modal-close-x" onClick=${() => setModal({ type: null })}>×</button>
-              <h2>🚰 Water Reservoir</h2>
-              <div className="modal-content">
-                <p>The water level sensor ${calibrated ? 'is calibrated.' : 'needs calibration for best accuracy.'}</p>
-                <button
-                  className="modal-confirm"
-                  onClick=${() => {
-                    handleButtonClick('calibrate_dry_tank')
-                    setTimeout(() => {
-                      handleButtonClick('calibrate_dry_tank')
-                      setCalibrationSuccess(true)
-                      setTimeout(() => setCalibrationSuccess(false), 8000)
-                    }, 500)
-                  }}
-                >
-                  Calibrate Empty Reservoir
-                </button>
-                ${calibrationSuccess
-                  ? html`<div className="calibrate-success">Calibration request sent.</div>`
-                  : null}
-              </div>
-            </div>
-          </div>
-        `
+        const calibrated = getBoolean('binary_sensor', 'water_calibrated')
+        return modalBase(
+          'Water Reservoir Calibration',
+          html`
+            <p>Empty and dry the water reservoir, then start the calibration routine.</p>
+            <button
+              className="primary-button"
+              onClick=${() => {
+                handleButtonClick('calibrate_dry_tank')
+                setTimeout(() => {
+                  handleButtonClick('calibrate_dry_tank')
+                  setCalibrationSuccess(true)
+                  setTimeout(() => setCalibrationSuccess(false), 8000)
+                }, 500)
+              }}
+            >
+              Calibrate empty reservoir
+            </button>
+            ${calibrationSuccess
+              ? html`<div className="success-banner">Calibration request sent.</div>`
+              : calibrated
+              ? html`<div className="info-banner positive">Sensor calibrated recently.</div>`
+              : html`<div className="info-banner warning">Calibration recommended for accurate readings.</div>`}
+          `,
+        )
       }
       case 'settings': {
-        return html`
-          <div className="modal-overlay" onClick=${() => setModal({ type: null })}>
-            <div className="modal" onClick=${(e) => e.stopPropagation()}>
-              <button className="modal-close-x" onClick=${() => setModal({ type: null })}>×</button>
-              <h2>⚙️ Device Settings</h2>
-              <div className="modal-content">
-                <div className="control-group">
-                  <label>Timezone</label>
-                  <select
-                    className="control-select"
-                    value=${timezone}
-                    onChange=${(e) => handleTimezoneChange(e.target.value)}
-                  >
-                    ${TIMEZONE_OPTIONS.map((tz) => html`<option value=${tz.value}>${tz.label}</option>`)}
-                  </select>
-                </div>
-                <div className="control-group">
-                  <label>Legal & Licenses</label>
-                  <button className="modal-secondary" onClick=${() => setShowLicense((prev) => !prev)}>
-                    ${showLicense ? 'Hide' : 'Show'} open-source licenses
-                  </button>
-                  ${showLicense
-                    ? html`<pre className="license-text">${entities['text_sensor-licenses']?.value ?? 'Licenses pending from device.'}</pre>`
-                    : null}
-                </div>
-                <div className="control-group">
-                  <label>Firmware Update</label>
-                  <input
-                    type="file"
-                    accept=".bin"
-                    disabled=${otaStatus === 'uploading'}
-                    onChange=${(e) => {
-                      const file = e.target.files?.[0]
-                      if (file) {
-                        setOtaFile(file)
-                        setOtaStatus('idle')
-                        setOtaMessage('')
-                      }
-                    }}
-                  />
-                  ${otaFile
-                    ? html`<div className="ota-file">Selected: ${otaFile.name} (${(otaFile.size / 1024 / 1024).toFixed(2)} MB)</div>`
-                    : null}
-                  <button
-                    className="modal-confirm"
-                    disabled=${!otaFile || otaStatus === 'uploading'}
-                    onClick=${handleOtaUpload}
-                  >
-                    ${otaStatus === 'uploading' ? 'Uploading...' : 'Upload Firmware'}
-                  </button>
-                  ${otaStatus !== 'idle'
-                    ? html`<div className="ota-status">${otaMessage}</div>`
-                    : null}
-                  ${otaStatus === 'uploading'
-                    ? html`<div className="ota-progress"><div style=${{ width: `${otaProgress}%` }}></div></div>`
-                    : null}
-                </div>
-              </div>
+        return modalBase(
+          'Device Settings & Maintenance',
+          html`
+            <div className="input-group">
+              <label for="timezoneSelect">Timezone</label>
+              <select id="timezoneSelect" value=${timezone} onChange=${(event) => handleTimezoneChange(event.target.value)}>
+                ${TIMEZONE_OPTIONS.map((tz) => html`<option value=${tz.value}>${tz.label}</option>`)}
+              </select>
             </div>
-          </div>
-        `
+            <div className="input-group">
+              <label>Open-source licenses</label>
+              <button className="chip-button" onClick=${() => setShowLicense((prev) => !prev)}>
+                ${showLicense ? 'Hide licenses' : 'Show licenses'}
+              </button>
+              ${showLicense ? html`<pre className="license-log">${licensesText}</pre>` : null}
+            </div>
+            <div className="input-group">
+              <label>Firmware update (OTA)</label>
+              <input
+                type="file"
+                accept=".bin"
+                disabled=${otaStatus === 'uploading'}
+                onChange=${(event) => {
+                  const file = event.target.files?.[0]
+                  if (file) {
+                    setOtaFile(file)
+                    setOtaStatus('idle')
+                    setOtaMessage('')
+                  }
+                }}
+              />
+              ${otaFile
+                ? html`<p className="file-helper">${otaFile.name} · ${(otaFile.size / (1024 * 1024)).toFixed(2)} MB</p>`
+                : null}
+              <div className="button-row">
+                <button
+                  className="primary-button"
+                  disabled=${!otaFile || otaStatus === 'uploading'}
+                  onClick=${handleOtaUpload}
+                >
+                  ${otaStatus === 'uploading' ? 'Uploading…' : 'Upload firmware'}
+                </button>
+                <button
+                  className="secondary-button"
+                  disabled=${otaStatus === 'uploading'}
+                  onClick=${() => {
+                    setOtaFile(null)
+                    setOtaStatus('idle')
+                    setOtaProgress(0)
+                    setOtaMessage('')
+                  }}
+                >
+                  Clear selection
+                </button>
+              </div>
+              ${otaStatus !== 'idle' ? html`<p className="status-text ${otaStatus}">${otaMessage}</p>` : null}
+              ${otaStatus === 'uploading'
+                ? html`<div className="progress"><div style=${{ width: `${otaProgress}%` }}></div></div>`
+                : null}
+            </div>
+          `,
+        )
       }
       default:
         return null
@@ -550,133 +728,139 @@ export function Dashboard() {
   }
 
   return html`
-    <div className="dashboard">
-      <header className="header-bar">
-        <div>
-          <h1>OpenShrooly Dashboard</h1>
-          <div className="header-time">
-            Last update ${lastUpdate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${timezone}
-          </div>
+    <div className="app-shell">
+      <header className="shell-header">
+        <div className="header-brand">
+          <h1>OpenShrooly</h1>
+          <p>Live grow environment at a glance — ${connectionMeta.label} mode</p>
         </div>
-        <div className="header-right">
-          <select className="timezone-select" value=${timezone} onChange=${(e) => handleTimezoneChange(e.target.value)}>
+        <div className="header-actions">
+          <span className=${`connection-pill ${connectionMeta.tone}`}>
+            <span className="pill-indicator"></span>${connectionMeta.label}
+          </span>
+          <button className="ghost-button" onClick=${manualRefresh}>Sync now</button>
+          <select className="header-select" value=${timezone} onChange=${(event) => handleTimezoneChange(event.target.value)}>
             ${TIMEZONE_OPTIONS.map((tz) => html`<option value=${tz.value}>${tz.label}</option>`)}
           </select>
-          <button className="charts-button" onClick=${() => setModal({ type: 'settings' })}>Settings</button>
         </div>
       </header>
 
-      ${alerts.length
-        ? html`<div className="alerts-banner">${alerts.map((alert) => html`<div className="alert-item">⚠️ ${alert.msg}</div>`)}</div>`
+      <p className="connection-help">${connection.detail || connectionMeta.detail}</p>
+
+      ${banner
+        ? html`<div className=${`info-banner ${banner.tone}`}>${banner.message}</div>`
         : null}
 
-      <section className="main-grid">
-        <${SensorCard}
-          icon="💧"
-          title="Humidity"
-          value=${humidity.toFixed(1)}
-          unit="%"
-          label=${`Target ${targetHumidity.toFixed(1)}% ± ${humidityHysteresis.toFixed(2)}%`}
-          onClick=${() => setModal({ type: 'humidity' })}
-        />
-        <${SensorCard}
-          icon="🌡️"
-          title="Temperature"
-          value=${temp.toFixed(1)}
-          unit="°C"
-          label=${tempControlEnabled ? `Range ${tempMin.toFixed(1)}° – ${tempMax.toFixed(1)}°` : 'Guard disabled'}
-          onClick=${() => setModal({ type: 'temperature' })}
-        />
-        <${SensorCard}
-          icon="🚰"
-          title="Water Level"
-          value=${waterLevel.toFixed(0)}
-          unit="%"
-          label=${calibrationSuccess ? 'Calibration requested' : 'Tap to calibrate'}
-          onClick=${() => setModal({ type: 'water' })}
-        />
-        <${SensorCard}
-          icon="💡"
-          title="Lighting"
-          value=${lightsOn ? 'ON' : 'OFF'}
-          label=${`Sunrise ${formatTime(lightsSunrise)} • Sunset ${formatTime(lightsSunset)}`}
-          onClick=${() => setModal({ type: 'light' })}
-        />
-        <${SensorCard}
-          icon="🌬️"
-          title="Air Exchange"
-          value=${airExchangeOn ? 'Active' : 'Idle'}
-          label=${`Tap to tune cycle`}
-          onClick=${() => setModal({ type: 'air' })}
-        />
-        <${SensorCard}
-          icon="⚙️"
-          title="Controls"
-          value="Adjust"
-          label="Open settings & OTA"
-          onClick=${() => setModal({ type: 'settings' })}
-        />
-      </section>
+      ${alerts.length
+        ? html`<div className="alert-stack">
+            ${alerts.map((alert) => html`<div className="alert-item">⚠️ ${alert.msg}</div>`)}
+          </div>`
+        : null}
 
-      <section className="secondary-grid">
-        <${StatusCard}
-          icon="🌀"
-          title="Humidifier"
-          status=${humidifierOn ? 'on' : 'off'}
-          detail=${humidifierOn ? 'Maintaining target humidity' : 'Standby'}
-          onClick=${() => handleSwitchChange('switch-humidifier', !humidifierOn)}
-        />
-        <${StatusCard}
-          icon="🌬️"
-          title="Air Exchange"
-          status=${airExchangeOn ? 'on' : 'off'}
-          detail=${airExchangeOn ? 'Cycling fresh air' : 'Idle'}
-          onClick=${() => handleSwitchChange('switch-air_exchange', !airExchangeOn)}
-        />
-        <${StatusCard}
-          icon="🔥"
-          title="Heater"
-          status=${heatRequested ? 'on' : 'off'}
-          detail=${tempControlEnabled ? 'Temperature guard active' : 'Guard disabled'}
-          onClick=${() => setModal({ type: 'temperature' })}
-        />
-        <${StatusCard}
-          icon="💡"
-          title="Lights"
-          status=${lightsOn ? 'on' : 'off'}
-          detail=${`${luxValue} lux target`}
-          onClick=${() => setModal({ type: 'light' })}
-        />
-      </section>
+      <main className="layout-grid">
+        <section className="panel stretch">
+          <header className="panel-header">
+            <h2>Environment snapshot</h2>
+            <span>Last update ${lastUpdate ? lastUpdate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'} · ${timezoneLabel}</span>
+          </header>
+          <div className="metric-grid">
+            <${SensorCard}
+              icon="💧"
+              title="Humidity"
+              value=${humidity.toFixed(1)}
+              unit="%"
+              caption=${`Target ${targetHumidity.toFixed(1)}% · ±${humidityHysteresis.toFixed(2)}%`}
+              tone=${Math.abs(humidity - targetHumidity) <= humidityHysteresis ? 'positive' : 'warning'}
+              onClick=${() => setModal('humidity')}
+            />
+            <${SensorCard}
+              icon="🌡️"
+              title="Temperature"
+              value=${temperature.toFixed(1)}
+              unit="°C"
+              caption=${tempControlEnabled ? `Comfort band ${tempMin.toFixed(1)}°–${tempMax.toFixed(1)}°` : 'Guard disabled'}
+              tone=${tempControlEnabled ? (temperature >= tempMin && temperature <= tempMax ? 'positive' : 'warning') : 'calm'}
+              onClick=${() => setModal('temperature')}
+            />
+            <${SensorCard}
+              icon="🚰"
+              title="Water level"
+              value=${waterLevel.toFixed(0)}
+              unit="%"
+              caption=${calibrationSuccess ? 'Calibration requested' : 'Tap to calibrate'}
+              tone=${waterLevel < 10 ? 'critical' : waterLevel < 25 ? 'warning' : 'calm'}
+              onClick=${() => setModal('water')}
+            />
+            <${SensorCard}
+              icon="💡"
+              title="Lighting"
+              value=${airExchangeOn ? 'Active cycle' : 'Passive'}
+              caption=${`Sunrise ${formatTime(lightsSunrise)} · Sunset ${formatTime(lightsSunset)} · ${luxValue} lux`}
+              tone=${luxValue > 0 ? 'positive' : 'calm'}
+              onClick=${() => setModal('light')}
+            />
+          </div>
+        </section>
 
-      <section className="actions-panel">
-        <div className="action-row">
-          <label>
-            <input
-              type="checkbox"
-              checked=${humidifierOn}
-              onChange=${(e) => handleSwitchChange('switch-humidifier', e.target.checked)}
+        <section className="panel">
+          <header className="panel-header">
+            <h2>Automation status</h2>
+            <span>Tap a tile to manage</span>
+          </header>
+          <div className="status-grid">
+            <${StatusCard}
+              icon="🌀"
+              title="Humidifier"
+              status=${humidifierOn ? 'on' : 'off'}
+              detail=${humidifierOn ? 'Maintaining humidity band' : 'Standby'}
+              onClick=${() => handleSwitchChange('humidifier', !humidifierOn)}
             />
-            Humidifier
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked=${airExchangeOn}
-              onChange=${(e) => handleSwitchChange('switch-air_exchange', e.target.checked)}
+            <${StatusCard}
+              icon="🌬️"
+              title="Air exchange"
+              status=${airExchangeOn ? 'on' : 'off'}
+              detail=${airExchangeOn ? 'Cycling fresh air' : 'Idle'}
+              onClick=${() => setModal('air')}
             />
-            Air exchange
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked=${getSwitchState('ble_enabled')}
-              onChange=${(e) => handleSwitchChange('switch-ble_enabled', e.target.checked)}
+            <${StatusCard}
+              icon="🔥"
+              title="Heat assist"
+              status=${heatRequested ? 'on' : 'off'}
+              detail=${tempControlEnabled ? 'Guard is active' : 'Guard disabled'}
+              onClick=${() => setModal('temperature')}
             />
-            BLE service
-          </label>
-        </div>
-      </section>
+            <${StatusCard}
+              icon="📡"
+              title="BLE service"
+              status=${bleEnabled ? 'on' : 'off'}
+              detail=${bleEnabled ? 'Paired devices can read sensors' : 'Broadcast disabled by default'}
+              onClick=${() => handleSwitchChange('ble_enabled', !bleEnabled)}
+            />
+          </div>
+        </section>
+
+        <section className="panel">
+          <header className="panel-header">
+            <h2>Quick controls</h2>
+            <span>Immediate actions</span>
+          </header>
+          <div className="control-grid">
+            <label className="control-toggle">
+              <input type="checkbox" checked=${humidifierOn} onChange=${(event) => handleSwitchChange('humidifier', event.target.checked)} />
+              <span>Humidifier</span>
+            </label>
+            <label className="control-toggle">
+              <input type="checkbox" checked=${airExchangeOn} onChange=${(event) => handleSwitchChange('air_exchange', event.target.checked)} />
+              <span>Air exchange</span>
+            </label>
+            <label className="control-toggle">
+              <input type="checkbox" checked=${bleEnabled} onChange=${(event) => handleSwitchChange('ble_enabled', event.target.checked)} />
+              <span>BLE service</span>
+            </label>
+            <button className="secondary-button" onClick=${() => setModal('settings')}>Open settings & OTA</button>
+          </div>
+        </section>
+      </main>
 
       ${renderModal()}
     </div>

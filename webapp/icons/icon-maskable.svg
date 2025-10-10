@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="maskGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3db28c"/>
+      <stop offset="100%" stop-color="#25477b"/>
+    </linearGradient>
+  </defs>
+  <rect x="32" y="32" width="448" height="448" rx="120" fill="url(#maskGrad)"/>
+  <path d="M180 360c48 64 148 60 196-4 48-62 12-148-68-160-16-72-70-116-148-116-64 0-108 36-108 82 0 44 32 76 84 80-24 42-18 90 44 118z" fill="#f8fbff" opacity="0.92"/>
+</svg>

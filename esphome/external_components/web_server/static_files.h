@@ -34,6 +34,18 @@ extern const uint8_t STATIC_FILE_8_DATA[];
 extern const size_t STATIC_FILE_8_SIZE;
 extern const uint8_t STATIC_FILE_9_DATA[];
 extern const size_t STATIC_FILE_9_SIZE;
+extern const uint8_t STATIC_FILE_10_DATA[];
+extern const size_t STATIC_FILE_10_SIZE;
+extern const uint8_t STATIC_FILE_11_DATA[];
+extern const size_t STATIC_FILE_11_SIZE;
+extern const uint8_t STATIC_FILE_12_DATA[];
+extern const size_t STATIC_FILE_12_SIZE;
+extern const uint8_t STATIC_FILE_13_DATA[];
+extern const size_t STATIC_FILE_13_SIZE;
+extern const uint8_t STATIC_FILE_14_DATA[];
+extern const size_t STATIC_FILE_14_SIZE;
+extern const uint8_t STATIC_FILE_15_DATA[];
+extern const size_t STATIC_FILE_15_SIZE;
 
 extern const StaticFile STATIC_FILES[];
 extern const size_t STATIC_FILES_COUNT;

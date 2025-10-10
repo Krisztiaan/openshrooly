@@ -8,7 +8,14 @@ const html = htm.bind(h)
 function App() {
   useEffect(() => {
     document.body.classList.add('loaded')
-    return () => document.body.classList.remove('loaded')
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker
+        .register('/app/service-worker.js')
+        .catch((error) => console.error('[PWA] Service worker registration failed', error))
+    }
+    return () => {
+      document.body.classList.remove('loaded')
+    }
   }, [])
 
   return html`<${Dashboard} />`

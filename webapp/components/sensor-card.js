@@ -3,18 +3,40 @@ import htm from '../vendor/htm.module.js'
 
 const html = htm.bind(h)
 
-export function SensorCard({ icon, title, value, unit, label, onClick }) {
+const toneToClass = {
+  positive: 'tone-positive',
+  warning: 'tone-warning',
+  critical: 'tone-critical',
+  calm: 'tone-calm',
+}
+
+export function SensorCard({ icon, title, value, unit, caption, tone = 'calm', onClick }) {
+  const classes = ['tile', 'metric-tile', toneToClass[tone] || 'tone-calm']
+  const roleProps = onClick
+    ? {
+        role: 'button',
+        tabIndex: 0,
+        onClick,
+        onKeyDown: (event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            onClick(event)
+          }
+        },
+      }
+    : {}
+
   return html`
-    <div className="card" onClick=${onClick}>
-      <div className="card-header">
-        <div className="card-icon">${icon}</div>
-        <div className="card-title">${title}</div>
+    <article className=${classes.join(' ')} ...${roleProps}>
+      <div className="tile-top">
+        <span className="tile-icon">${icon}</span>
+        <span className="tile-title">${title}</span>
       </div>
-      <div className="card-value">
-        ${value}
-        ${unit ? html`<span style=${{ fontSize: '0.6em', marginLeft: '4px' }}>${unit}</span>` : null}
+      <div className="tile-value">
+        <span className="value">${value}</span>
+        ${unit ? html`<span className="unit">${unit}</span>` : null}
       </div>
-      ${label ? html`<div className="card-label">${label}</div>` : null}
-    </div>
+      ${caption ? html`<p className="tile-caption">${caption}</p>` : null}
+    </article>
   `
 }

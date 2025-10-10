@@ -4,18 +4,32 @@ import htm from '../vendor/htm.module.js'
 const html = htm.bind(h)
 
 export function StatusCard({ icon, title, status, detail, onClick }) {
+  const isOn = status === 'on'
+  const classes = ['tile', 'status-tile', isOn ? 'tone-positive' : 'tone-calm']
+  const roleProps = onClick
+    ? {
+        role: 'button',
+        tabIndex: 0,
+        onClick,
+        onKeyDown: (event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            onClick(event)
+          }
+        },
+      }
+    : {}
+
   return html`
-    <div className="card" onClick=${onClick}>
-      <div className="card-header">
-        <div className="card-icon">${icon}</div>
-        <div className="card-title">${title}</div>
+    <article className=${classes.join(' ')} ...${roleProps}>
+      <div className="tile-top">
+        <span className="tile-icon">${icon}</span>
+        <span className="tile-title">${title}</span>
       </div>
-      <div style=${{ marginTop: '16px' }}>
-        <span className=${`status-badge status-${status}`}>
-          ${status.toUpperCase()}
-        </span>
+      <div className="status-row">
+        <span className=${`status-badge ${isOn ? 'on' : 'off'}`}>${isOn ? 'ON' : 'OFF'}</span>
+        <span className="status-detail">${detail}</span>
       </div>
-      ${detail ? html`<div className="card-label" style=${{ marginTop: '12px' }}>${detail}</div>` : null}
-    </div>
+    </article>
   `
 }
