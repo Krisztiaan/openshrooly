@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'openshrooly-dashboard-v4'
+const CACHE_VERSION = 'openshrooly-dashboard-v5'
 const CACHE_NAME = CACHE_VERSION
 
 const BASE_PATH = (() => {
