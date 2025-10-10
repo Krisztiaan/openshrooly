@@ -369,6 +369,7 @@ export function Dashboard() {
 
   const waterLevel = useMemo(() => getNumeric('sensor', 'water_level_percent', getNumeric('sensor', 'water_level', 0)), [entities])
   const systemVoltage = useMemo(() => getNumeric('sensor', 'system_voltage', NaN), [entities])
+  const fanRpm = useMemo(() => getNumeric('sensor', 'current_air_exchange_fan_speed', NaN), [entities])
 
   const lightsSunrise = useMemo(() => getNumeric('number', 'lights__sunrise_hour', 8), [entities])
   const lightsDuration = useMemo(() => getNumeric('number', 'lights__duration__hours_', 12), [entities])
@@ -407,8 +408,11 @@ export function Dashboard() {
   const wifiSSID = useMemo(() => getText('wifi_ssid') || 'Unknown', [entities])
   const ipAddress = useMemo(() => getText('ip_address') || 'Unavailable', [entities])
   const calibrationStatus = useMemo(() => getText('calibration_status') || '', [entities])
+  const airExchangeStatusText = useMemo(() => getText('air_exchange_status') || '', [entities])
+  const lightsStatusText = useMemo(() => getText('lights_status') || '', [entities])
+  const humidifierStatusText = useMemo(() => getText('humidifier_fan_status') || '', [entities])
   const licensesText = useMemo(() => getText('licenses') || 'License list not yet reported by the device.', [entities])
-  const voltageDisplay = Number.isFinite(systemVoltage) ? `${systemVoltage.toFixed(2)} V` : '—'
+  const voltageDisplay = Number.isFinite(systemVoltage) ? `${systemVoltage.toFixed(2)} V` : '--'
   const lastUpdateDisplay = lastUpdate
     ? lastUpdate.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })
     : 'No data yet'
@@ -739,6 +743,10 @@ export function Dashboard() {
                   <span className="info-label">Last snapshot</span>
                   <span className="info-value">${lastUpdateDisplay}</span>
                 </div>
+                <div className="info-row">
+                  <span className="info-label">Fan RPM</span>
+                  <span className="info-value">${Number.isFinite(fanRpm) ? `${fanRpm.toFixed(0)}` : '--'}</span>
+                </div>
               </div>
             </section>
             <section className="settings-section">
@@ -823,6 +831,21 @@ export function Dashboard() {
                   : null}
               </div>
             </section>
+            <section className="settings-section">
+              <h3>Maintenance</h3>
+              <div className="button-row">
+                <button className="secondary-button" onClick=${() => handleButtonClick('beeper_test')}>
+                  Play beeper test
+                </button>
+                <button className="secondary-button" onClick=${() => handleButtonClick('restart_openshrooly')}>
+                  Restart controller
+                </button>
+                <button className="secondary-button" onClick=${() => handleButtonClick('reprogram_rp2040_coprocessor')}>
+                  Reprogram coprocessor
+                </button>
+              </div>
+              <p className="field-hint">Coprocessor flashing requires the SWD programmer connected.</p>
+            </section>
           `,
         )
       }
@@ -895,14 +918,14 @@ export function Dashboard() {
               tone=${waterLevel < 10 ? 'critical' : waterLevel < 25 ? 'warning' : 'calm'}
               onClick=${() => setModal('water')}
             />
-            <${SensorCard}
-              icon="💡"
-              title="Lighting"
-              value=${lightsOn ? 'ON' : 'OFF'}
-              caption=${`Sunrise ${formatTime(lightsSunrise)} · Sunset ${formatTime(lightsSunset)} · ${luxValue} lux`}
-              tone=${lightsOn ? 'positive' : 'calm'}
-              onClick=${() => setModal('light')}
-            />
+        <${SensorCard}
+          icon="💡"
+          title="Lighting"
+          value=${lightsOn ? 'ON' : 'OFF'}
+          caption=${lightsStatusText || `Sunrise ${formatTime(lightsSunrise)} · Sunset ${formatTime(lightsSunset)} · ${luxValue} lux`}
+          tone=${lightsOn ? 'positive' : 'calm'}
+          onClick=${() => setModal('light')}
+        />
           </div>
         </section>
 
@@ -912,20 +935,20 @@ export function Dashboard() {
             <span>Tap a tile to manage</span>
           </header>
           <div className="status-grid">
-            <${StatusCard}
-              icon="🌀"
-              title="Humidifier"
-              status=${humidifierOn ? 'on' : 'off'}
-              detail=${humidifierOn ? 'Maintaining humidity band' : 'Standby'}
-              onClick=${() => handleSwitchChange('humidifier', !humidifierOn)}
-            />
-            <${StatusCard}
-              icon="🌬️"
-              title="Air exchange"
-              status=${airExchangeOn ? 'on' : 'off'}
-              detail=${airExchangeOn ? 'Cycling fresh air' : 'Idle'}
-              onClick=${() => setModal('air')}
-            />
+        <${StatusCard}
+          icon="🌀"
+          title="Humidifier"
+          status=${humidifierOn ? 'on' : 'off'}
+          detail=${humidifierStatusText || (humidifierOn ? 'Maintaining humidity band' : 'Standby')}
+          onClick=${() => handleSwitchChange('humidifier', !humidifierOn)}
+        />
+        <${StatusCard}
+          icon="🌬️"
+          title="Air exchange"
+          status=${airExchangeOn ? 'on' : 'off'}
+          detail=${airExchangeStatusText || (Number.isFinite(fanRpm) ? `${fanRpm.toFixed(0)} RPM` : airExchangeOn ? 'Cycling fresh air' : 'Idle')}
+          onClick=${() => setModal('air')}
+        />
             <${StatusCard}
               icon="🔥"
               title="Heat assist"

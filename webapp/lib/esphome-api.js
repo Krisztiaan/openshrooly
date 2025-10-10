@@ -31,7 +31,16 @@ const DEFAULT_BINARY_SENSOR_IDS = [
   'alert__temperature_too_low',
   'alert__temperature_too_high',
 ]
-const DEFAULT_TEXT_SENSOR_IDS = ['licenses', 'wifi_mode', 'wifi_ssid', 'ip_address', 'calibration_status']
+const DEFAULT_TEXT_SENSOR_IDS = [
+  'licenses',
+  'wifi_mode',
+  'wifi_ssid',
+  'ip_address',
+  'calibration_status',
+  'air_exchange_status',
+  'lights_status',
+  'humidifier_fan_status',
+]
 
 class ESPHomeAPI {
   constructor(baseUrl = null) {
@@ -159,6 +168,7 @@ class ESPHomeAPI {
       'water_level_percent',
       'water_level',
       'system_voltage',
+      'current_air_exchange_fan_speed',
     ],
     binarySensorIds = DEFAULT_BINARY_SENSOR_IDS,
     textSensorIds = DEFAULT_TEXT_SENSOR_IDS,
