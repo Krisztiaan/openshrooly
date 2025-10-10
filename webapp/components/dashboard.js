@@ -15,16 +15,212 @@ const ALERTS = [
   { id: 'temperature_too_high', msg: 'Temperature is above the safe range' },
 ]
 
-const TIMEZONE_OPTIONS = [
-  { value: 'America/Los_Angeles', label: 'Pacific Time' },
-  { value: 'America/Denver', label: 'Mountain Time' },
-  { value: 'America/Phoenix', label: 'Arizona' },
-  { value: 'America/Chicago', label: 'Central Time' },
-  { value: 'America/New_York', label: 'Eastern Time' },
-  { value: 'Europe/London', label: 'London' },
-  { value: 'Europe/Berlin', label: 'Berlin' },
-  { value: 'Asia/Tokyo', label: 'Tokyo' },
+const FALLBACK_TIMEZONES = [
+  'America/Los_Angeles',
+  'America/Denver',
+  'America/Phoenix',
+  'America/Chicago',
+  'America/New_York',
+  'America/Toronto',
+  'America/Mexico_City',
+  'America/Sao_Paulo',
+  'America/Argentina/Buenos_Aires',
+  'America/Bogota',
+  'America/Lima',
+  'America/Caracas',
+  'Europe/London',
+  'Europe/Dublin',
+  'Europe/Lisbon',
+  'Europe/Paris',
+  'Europe/Berlin',
+  'Europe/Amsterdam',
+  'Europe/Brussels',
+  'Europe/Rome',
+  'Europe/Madrid',
+  'Europe/Warsaw',
+  'Europe/Stockholm',
+  'Europe/Oslo',
+  'Europe/Athens',
+  'Europe/Helsinki',
+  'Europe/Istanbul',
+  'Europe/Kiev',
+  'Europe/Moscow',
+  'Africa/Cairo',
+  'Africa/Johannesburg',
+  'Africa/Lagos',
+  'Africa/Nairobi',
+  'Asia/Jerusalem',
+  'Asia/Dubai',
+  'Asia/Riyadh',
+  'Asia/Tehran',
+  'Asia/Karachi',
+  'Asia/Kolkata',
+  'Asia/Dhaka',
+  'Asia/Bangkok',
+  'Asia/Jakarta',
+  'Asia/Singapore',
+  'Asia/Kuala_Lumpur',
+  'Asia/Manila',
+  'Asia/Hong_Kong',
+  'Asia/Shanghai',
+  'Asia/Taipei',
+  'Asia/Seoul',
+  'Asia/Tokyo',
+  'Australia/Perth',
+  'Australia/Adelaide',
+  'Australia/Darwin',
+  'Australia/Brisbane',
+  'Australia/Sydney',
+  'Australia/Melbourne',
+  'Pacific/Auckland',
+  'Pacific/Fiji',
+  'Pacific/Honolulu',
 ]
+
+const POPULAR_TIMEZONES = [
+  'America/Los_Angeles',
+  'America/Denver',
+  'America/New_York',
+  'Europe/London',
+  'Europe/Berlin',
+  'Asia/Tokyo',
+  'Australia/Sydney',
+]
+
+const PREF_KEY = 'openshrooly:prefs'
+const SYSTEM_TIME_ZONE = typeof Intl !== 'undefined' ? Intl.DateTimeFormat().resolvedOptions().timeZone : null
+
+const loadPreferences = () => {
+  if (typeof window === 'undefined') return {}
+  try {
+    const raw = window.localStorage.getItem(PREF_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (parsed && typeof parsed === 'object') return parsed
+    }
+  } catch (error) {
+    console.warn('[prefs] Failed to load preferences', error)
+  }
+  return {}
+}
+
+const savePreferences = (prefs) => {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(PREF_KEY, JSON.stringify(prefs))
+  } catch (error) {
+    console.warn('[prefs] Failed to save preferences', error)
+  }
+}
+
+const getSupportedTimeZones = () => {
+  if (typeof Intl !== 'undefined' && typeof Intl.supportedValuesOf === 'function') {
+    try {
+      return Intl.supportedValuesOf('timeZone')
+    } catch (error) {
+      console.warn('[tz] Unable to query supported time zones', error)
+    }
+  }
+  return FALLBACK_TIMEZONES
+}
+
+const computeOffsetLabel = (zone) => {
+  if (typeof Intl === 'undefined') return ''
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZone: zone,
+      timeZoneName: 'shortOffset',
+    })
+    const parts = formatter.formatToParts(new Date())
+    const tzName = parts.find((part) => part.type === 'timeZoneName')?.value
+    if (!tzName) return ''
+    if (tzName.startsWith('GMT')) return tzName.replace('GMT', 'UTC')
+    return tzName
+  } catch (error) {
+    console.warn('[tz] Failed to compute offset for', zone, error)
+    return ''
+  }
+}
+
+const prettifyZone = (zone) => {
+  const parts = zone.split('/')
+  const region = (parts.shift() || 'Other').replace(/_/g, ' ')
+  const city = parts.length ? parts.map((part) => part.replace(/_/g, ' ')).join(' / ') : region
+  return { region, city }
+}
+
+const createTimezoneOption = (zone, localZone) => {
+  const { region, city } = prettifyZone(zone)
+  const offset = computeOffsetLabel(zone)
+  const labelParts = []
+  if (offset) labelParts.push(`(${offset})`)
+  labelParts.push(city)
+  if (city !== region) labelParts.push(`— ${region}`)
+  const baseLabel = labelParts.join(' ')
+  const renderLabel = zone === localZone ? `${baseLabel} • Local device` : baseLabel
+  return {
+    value: zone,
+    label: renderLabel,
+    baseLabel,
+    region,
+  }
+}
+
+const buildTimezoneGroups = (selectedZone) => {
+  const localZone = SYSTEM_TIME_ZONE
+  const supported = getSupportedTimeZones()
+  const allZones = new Set([...supported, ...FALLBACK_TIMEZONES])
+  if (localZone) allZones.add(localZone)
+  if (selectedZone) allZones.add(selectedZone)
+
+  const optionCache = new Map()
+  const getOption = (zone) => {
+    if (!optionCache.has(zone)) optionCache.set(zone, createTimezoneOption(zone, localZone))
+    return optionCache.get(zone)
+  }
+
+  const priorityZones = [...POPULAR_TIMEZONES]
+  if (localZone && !priorityZones.includes(localZone)) priorityZones.unshift(localZone)
+  if (selectedZone && !priorityZones.includes(selectedZone)) priorityZones.unshift(selectedZone)
+
+  const seen = new Set()
+  const groups = []
+  const popularOptions = []
+
+  priorityZones.forEach((zone) => {
+    if (!allZones.has(zone) || seen.has(zone)) return
+    popularOptions.push(getOption(zone))
+    seen.add(zone)
+  })
+
+  if (popularOptions.length) {
+    groups.push({ label: 'Popular & recent', options: popularOptions })
+  }
+
+  const regionBuckets = new Map()
+  Array.from(allZones)
+    .sort((a, b) => a.localeCompare(b))
+    .forEach((zone) => {
+      if (seen.has(zone)) return
+      const option = getOption(zone)
+      const region = option.region || 'Other'
+      if (!regionBuckets.has(region)) regionBuckets.set(region, [])
+      regionBuckets.get(region).push(option)
+    })
+
+  Array.from(regionBuckets.keys())
+    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+    .forEach((region) => {
+      const options = regionBuckets
+        .get(region)
+        .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }))
+      groups.push({ label: region, options })
+    })
+
+  return groups
+}
 
 const CONNECTION_META = {
   connecting: { label: 'Connecting', tone: 'calm', detail: 'Looking for the OpenShrooly on your network…' },
@@ -65,7 +261,8 @@ export function Dashboard() {
   const [entities, setEntities] = useState({})
   const [loading, setLoading] = useState(true)
   const [modal, setModal] = useState(null)
-  const [timezone, setTimezone] = useState('America/Denver')
+  const [prefs, setPrefs] = useState(() => loadPreferences())
+  const [timezone, setTimezone] = useState(() => prefs.timezone || SYSTEM_TIME_ZONE || 'America/Denver')
   const [calibrationSuccess, setCalibrationSuccess] = useState(false)
   const [showLicense, setShowLicense] = useState(false)
   const [otaFile, setOtaFile] = useState(null)
@@ -121,6 +318,15 @@ export function Dashboard() {
     }
     return false
   }
+
+  useEffect(() => {
+    setPrefs((previous) => {
+      if (previous.timezone === timezone) return previous
+      const updated = { ...previous, timezone }
+      savePreferences(updated)
+      return updated
+    })
+  }, [timezone])
 
   const refreshSnapshot = async ({ silent = false } = {}) => {
     try {
@@ -418,7 +624,11 @@ export function Dashboard() {
   )
   const heatRequested = useMemo(() => getBoolean('binary_sensor', 'heat_requested'), [entities])
   const bleEnabled = useMemo(() => getBoolean('switch', 'ble_enabled'), [entities])
-  const timezoneLabel = useMemo(() => TIMEZONE_OPTIONS.find((tz) => tz.value === timezone)?.label ?? timezone, [timezone])
+  const timezoneLabel = useMemo(() => {
+    const flat = timezoneGroups.flatMap((group) => group.options)
+    const match = flat.find((option) => option.value === timezone)
+    return match ? match.baseLabel : timezone
+  }, [timezoneGroups, timezone])
   const wifiMode = useMemo(() => getText('wifi_mode') || 'Unknown', [entities])
   const wifiSSID = useMemo(() => getText('wifi_ssid') || 'Unknown', [entities])
   const ipAddress = useMemo(() => getText('ip_address') || 'Unavailable', [entities])
@@ -435,6 +645,7 @@ export function Dashboard() {
   const viewOnlyNotice = controlsDisabled
     ? html`<div className="info-banner warning">Device offline: settings are read-only until the connection returns.</div>`
     : null
+  const timezoneGroups = useMemo(() => buildTimezoneGroups(timezone), [timezone])
 
   const alerts = useMemo(
     () => ALERTS.filter((alert) => getBoolean('binary_sensor', `alert__${alert.id}`)),
@@ -813,7 +1024,11 @@ export function Dashboard() {
               <div className="input-group">
                 <label for="timezoneSelect">Timezone</label>
                 <select id="timezoneSelect" value=${timezone} disabled=${controlsDisabled} onChange=${(event) => handleTimezoneChange(event.target.value)}>
-                  ${TIMEZONE_OPTIONS.map((tz) => html`<option value=${tz.value}>${tz.label}</option>`)}
+                  ${timezoneGroups.map(
+                    (group) => html`<optgroup label=${group.label}>
+                      ${group.options.map((option) => html`<option value=${option.value}>${option.label}</option>`)}
+                    </optgroup>`,
+                  )}
                 </select>
               </div>
             </section>
@@ -909,7 +1124,11 @@ export function Dashboard() {
           </span>
           <button className="ghost-button" onClick=${manualRefresh}>Sync now</button>
           <select className="header-select" value=${timezone} disabled=${controlsDisabled} onChange=${(event) => handleTimezoneChange(event.target.value)}>
-            ${TIMEZONE_OPTIONS.map((tz) => html`<option value=${tz.value}>${tz.label}</option>`)}
+            ${timezoneGroups.map(
+              (group) => html`<optgroup label=${group.label}>
+                ${group.options.map((option) => html`<option value=${option.value}>${option.label}</option>`)}
+              </optgroup>`,
+            )}
           </select>
         </div>
       </header>
