@@ -230,7 +230,7 @@ const CONNECTION_META = {
 }
 
 const BASE_POLL_MS = 5000
-const MAX_POLL_MS = 60000
+const MAX_POLL_MS = 15000
 const RECONNECT_INTERVAL_MS = 15000
 
 const formatTime = (hour) => {

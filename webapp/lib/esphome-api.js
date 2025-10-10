@@ -45,9 +45,11 @@ const DEFAULT_TEXT_SENSOR_IDS = [
 class ESPHomeAPI {
   constructor(baseUrl = null) {
     this.baseUrl = baseUrl || (typeof window !== 'undefined' ? window.location.origin : '')
+    this.offlineUntil = 0
   }
 
   async _get(path) {
+    this._assertOnline()
     try {
       const response = await fetch(`${this.baseUrl}${path}`)
       if (!response.ok) {
@@ -58,11 +60,13 @@ class ESPHomeAPI {
       return await response.json()
     } catch (error) {
       console.error(`GET ${path} failed`, error)
+      this._recordFailure()
       throw error
     }
   }
 
   async _post(path) {
+    this._assertOnline()
     try {
       const response = await fetch(`${this.baseUrl}${path}`, { method: 'POST' })
       if (!response.ok) {
@@ -73,8 +77,19 @@ class ESPHomeAPI {
       return true
     } catch (error) {
       console.error(`POST ${path} failed`, error)
+      this._recordFailure()
       throw error
     }
+  }
+
+  _assertOnline() {
+    if (Date.now() < this.offlineUntil) {
+      throw new Error('ESPHome endpoint is currently marked offline')
+    }
+  }
+
+  _recordFailure() {
+    this.offlineUntil = Date.now() + 10000
   }
 
   getSensor(id) {
@@ -207,6 +222,13 @@ class ESPHomeAPI {
     textSensorIds = DEFAULT_TEXT_SENSOR_IDS,
     selectIds = ['timezone_select'],
   } = {}) {
+    try {
+      const jsonSnapshot = await this._fetchJsonSnapshot()
+      if (jsonSnapshot) return jsonSnapshot
+    } catch (error) {
+      throw error
+    }
+
     const [numbers, switches, sensors, binarySensors, textSensors, selects] = await Promise.all([
       this.getAllNumbers(numberIds),
       this.getSwitchStates(switchIds),
@@ -236,6 +258,60 @@ class ESPHomeAPI {
       ...textSensors,
       ...selects,
     }
+  }
+
+  async _fetchJsonSnapshot() {
+    const data = await this._get('/json')
+    const normalized = this._normalizeJsonSnapshot(data)
+    if (normalized && Object.keys(normalized).length > 0) {
+      this.offlineUntil = 0
+      return normalized
+    }
+    console.warn('[api] /json snapshot returned unexpected payload, using legacy fetch')
+    return null
+  }
+
+  _normalizeJsonSnapshot(data) {
+    if (!data || typeof data !== 'object') return null
+
+    const result = {}
+
+    const ingest = (component, entity) => {
+      if (!entity) return
+      let key = entity.key || ''
+      if (!key && entity.object_id) key = `${component}.${entity.object_id}`
+      if (!key && entity.id) key = `${component}.${entity.id}`
+      if (!key) return
+      key = key.replace(/\./g, '-')
+      if (!key.includes('-') && component) {
+        key = `${component}-${key}`
+      }
+      const value = entity.state ?? entity.value ?? entity.status ?? null
+      result[key] = {
+        state: entity.state ?? value,
+        value,
+        attributes: entity.attributes || {},
+      }
+    }
+
+    if (Array.isArray(data.components)) {
+      data.components.forEach((entity) => ingest(entity.component || entity.type || '', entity))
+    }
+
+    if (data.state && typeof data.state === 'object') {
+      Object.entries(data.state).forEach(([key, value]) => {
+        const normalizedKey = key.replace(/\./g, '-')
+        if (!result[normalizedKey]) {
+          result[normalizedKey] = {
+            state: value,
+            value,
+            attributes: {},
+          }
+        }
+      })
+    }
+
+    return result
   }
 
   subscribeToEvents(onEvent) {
