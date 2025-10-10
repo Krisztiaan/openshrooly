@@ -1,31 +1,49 @@
-const CACHE_VERSION = 'openshrooly-dashboard-v1'
-const CACHE_NAME = `${CACHE_VERSION}`
-const ASSETS = [
-  '/app/',
-  '/app/index.html',
-  '/app/app.js',
-  '/app/styles/app.css',
-  '/app/components/dashboard.js',
-  '/app/components/sensor-card.js',
-  '/app/components/status-card.js',
-  '/app/lib/esphome-api.js',
-  '/app/vendor/preact.module.js',
-  '/app/vendor/hooks.module.js',
-  '/app/vendor/htm.module.js',
-  '/app/manifest.webmanifest',
-  '/app/service-worker.js',
-  '/app/icons/icon-192.png',
-  '/app/icons/icon-512.png',
-  '/app/icons/icon-maskable.svg',
-  '/app/icons/favicon.svg'
+const CACHE_VERSION = 'openshrooly-dashboard-v2'
+const CACHE_NAME = CACHE_VERSION
+
+const BASE_PATH = (() => {
+  const path = new URL('.', self.location.href).pathname
+  if (path === '/' || path === '') return ''
+  return path.replace(/\/$/, '')
+})()
+
+const RELATIVE_ASSETS = [
+  './',
+  './index.html',
+  './app.js',
+  './styles/app.css',
+  './components/dashboard.js',
+  './components/sensor-card.js',
+  './components/status-card.js',
+  './lib/esphome-api.js',
+  './vendor/preact.module.js',
+  './vendor/hooks.module.js',
+  './vendor/htm.module.js',
+  './manifest.webmanifest',
+  './service-worker.js',
+  './icons/icon-192.png',
+  './icons/icon-512.png',
+  './icons/icon-maskable.svg',
+  './icons/favicon.svg',
 ]
+
+const ASSET_URLS = Array.from(
+  new Set(
+    RELATIVE_ASSETS.map((relativePath) => new URL(relativePath, self.location.href).pathname).concat(
+      BASE_PATH && BASE_PATH !== '/' ? [BASE_PATH] : []
+    )
+  )
+)
+
+const INDEX_PATH = new URL('./index.html', self.location.href).pathname
 
 self.addEventListener('install', (event) => {
   self.skipWaiting()
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)).catch((err) => {
-      console.error('[ServiceWorker] Asset caching failed', err)
-    })
+    caches
+      .open(CACHE_NAME)
+      .then((cache) => cache.addAll(ASSET_URLS))
+      .catch((error) => console.error('[ServiceWorker] Asset caching failed', error))
   )
 })
 
@@ -41,31 +59,38 @@ self.addEventListener('activate', (event) => {
   )
 })
 
+const ASSET_SET = new Set(ASSET_URLS)
+
 self.addEventListener('fetch', (event) => {
   const { request } = event
   if (request.method !== 'GET') return
 
   const url = new URL(request.url)
 
-  // Never try to cache the EventSource stream
-  if (url.pathname.endsWith('/events')) {
+  if (url.pathname.endsWith('/events')) return
+
+  if (url.origin !== self.location.origin) return
+
+  const isAsset = ASSET_SET.has(url.pathname)
+  const isNavigation = request.mode === 'navigate'
+  const withinScope = BASE_PATH
+    ? url.pathname === BASE_PATH || url.pathname.startsWith(`${BASE_PATH}/`)
+    : isAsset || url.pathname === '/' || url.pathname === ''
+
+  if (!isAsset && !(isNavigation && withinScope)) {
     return
   }
 
-  if (url.origin === location.origin) {
-    if (url.pathname.startsWith('/app/') || url.pathname === '/' || url.pathname === '/app') {
-      event.respondWith(
-        caches.match(request).then((cached) => {
-          if (cached) return cached
-          return fetch(request)
-            .then((response) => {
-              const copy = response.clone()
-              caches.open(CACHE_NAME).then((cache) => cache.put(request, copy))
-              return response
-            })
-            .catch(() => caches.match('/app/index.html'))
+  event.respondWith(
+    caches.match(request).then((cached) => {
+      if (cached) return cached
+      return fetch(request)
+        .then((response) => {
+          const copy = response.clone()
+          caches.open(CACHE_NAME).then((cache) => cache.put(request, copy))
+          return response
         })
-      )
-    }
-  }
+        .catch(() => caches.match(INDEX_PATH))
+    })
+  )
 })

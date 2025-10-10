@@ -381,6 +381,15 @@ export function Dashboard() {
       ),
     [entities]
   )
+  const lightsOn = useMemo(() => {
+    const now = new Date()
+    const currentHour = now.getHours() + now.getMinutes() / 60
+    if (lightsDuration <= 0) return false
+    if (lightsSunrise < lightsSunset) {
+      return currentHour >= lightsSunrise && currentHour < lightsSunset
+    }
+    return currentHour >= lightsSunrise || currentHour < lightsSunset
+  }, [lightsSunrise, lightsSunset, lightsDuration])
 
   const humidifierOn = useMemo(() => getBoolean('switch', 'humidifier') || getBoolean('binary_sensor', 'humidifier_on'), [entities])
   const airExchangeOn = useMemo(
@@ -794,9 +803,9 @@ export function Dashboard() {
             <${SensorCard}
               icon="💡"
               title="Lighting"
-              value=${airExchangeOn ? 'Active cycle' : 'Passive'}
+              value=${lightsOn ? 'ON' : 'OFF'}
               caption=${`Sunrise ${formatTime(lightsSunrise)} · Sunset ${formatTime(lightsSunset)} · ${luxValue} lux`}
-              tone=${luxValue > 0 ? 'positive' : 'calm'}
+              tone=${lightsOn ? 'positive' : 'calm'}
               onClick=${() => setModal('light')}
             />
           </div>

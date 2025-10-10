@@ -9,8 +9,9 @@ function App() {
   useEffect(() => {
     document.body.classList.add('loaded')
     if ('serviceWorker' in navigator) {
+      const swUrl = new URL('./service-worker.js', import.meta.url)
       navigator.serviceWorker
-        .register('/app/service-worker.js')
+        .register(swUrl.href)
         .catch((error) => console.error('[PWA] Service worker registration failed', error))
     }
     return () => {
