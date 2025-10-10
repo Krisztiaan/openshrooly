@@ -358,6 +358,7 @@ export function Dashboard() {
   const humidity = useMemo(() => getNumeric('sensor', 'humidity') || getNumeric('sensor', 'current_humidity'), [entities])
   const targetHumidity = useMemo(() => getNumeric('number', 'target_humidity', 70), [entities])
   const humidityHysteresis = useMemo(() => getNumeric('number', 'humidity__hysteresis', 2), [entities])
+  const humidifierSpeed = useMemo(() => getNumeric('number', 'humidifier__speed', 80), [entities])
 
   const temperature = useMemo(() => getNumeric('sensor', 'temperature') || getNumeric('sensor', 'current_temperature'), [entities])
   const tempTarget = useMemo(() => getNumeric('number', 'temperature__target', 22), [entities])
@@ -367,6 +368,7 @@ export function Dashboard() {
   const tempMax = tempControlEnabled ? tempTarget + tempHysteresis : 0
 
   const waterLevel = useMemo(() => getNumeric('sensor', 'water_level_percent', getNumeric('sensor', 'water_level', 0)), [entities])
+  const systemVoltage = useMemo(() => getNumeric('sensor', 'system_voltage', NaN), [entities])
 
   const lightsSunrise = useMemo(() => getNumeric('number', 'lights__sunrise_hour', 8), [entities])
   const lightsDuration = useMemo(() => getNumeric('number', 'lights__duration__hours_', 12), [entities])
@@ -390,6 +392,8 @@ export function Dashboard() {
     }
     return currentHour >= lightsSunrise || currentHour < lightsSunset
   }, [lightsSunrise, lightsSunset, lightsDuration])
+  const tempWarningMin = useMemo(() => getNumeric('number', 'temperature__warning_minimum', 18), [entities])
+  const tempWarningMax = useMemo(() => getNumeric('number', 'temperature__warning_maximum', 30), [entities])
 
   const humidifierOn = useMemo(() => getBoolean('switch', 'humidifier') || getBoolean('binary_sensor', 'humidifier_on'), [entities])
   const airExchangeOn = useMemo(
@@ -399,7 +403,15 @@ export function Dashboard() {
   const heatRequested = useMemo(() => getBoolean('binary_sensor', 'heat_requested'), [entities])
   const bleEnabled = useMemo(() => getBoolean('switch', 'ble_enabled'), [entities])
   const timezoneLabel = useMemo(() => TIMEZONE_OPTIONS.find((tz) => tz.value === timezone)?.label ?? timezone, [timezone])
+  const wifiMode = useMemo(() => getText('wifi_mode') || 'Unknown', [entities])
+  const wifiSSID = useMemo(() => getText('wifi_ssid') || 'Unknown', [entities])
+  const ipAddress = useMemo(() => getText('ip_address') || 'Unavailable', [entities])
+  const calibrationStatus = useMemo(() => getText('calibration_status') || '', [entities])
   const licensesText = useMemo(() => getText('licenses') || 'License list not yet reported by the device.', [entities])
+  const voltageDisplay = Number.isFinite(systemVoltage) ? `${systemVoltage.toFixed(2)} V` : '—'
+  const lastUpdateDisplay = lastUpdate
+    ? lastUpdate.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })
+    : 'No data yet'
 
   const alerts = useMemo(
     () => ALERTS.filter((alert) => getBoolean('binary_sensor', `alert__${alert.id}`)),
@@ -489,6 +501,19 @@ export function Dashboard() {
                 )}
               </div>
             </div>
+            <div className="input-group">
+              <label for="humidifierSpeed">Humidifier fan speed · ${humidifierSpeed.toFixed(0)}%</label>
+              <input
+                id="humidifierSpeed"
+                type="range"
+                min="40"
+                max="100"
+                step="5"
+                value=${humidifierSpeed}
+                onInput=${(event) => handleNumberChange('humidifier__speed', event.target.value)}
+              />
+              <p className="field-hint">Higher speeds add humidity faster but increase noise and water consumption.</p>
+            </div>
           `,
         )
       }
@@ -529,6 +554,35 @@ export function Dashboard() {
                   step="0.25"
                   value=${tempHysteresis}
                   onInput=${(event) => handleNumberChange('temperature__hysteresis', event.target.value)}
+                />
+              </div>
+            </div>
+            <div className="info-banner calm">
+              <span>⚠️ Use warnings to surface comfort deviations without changing the guard.</span>
+            </div>
+            <div className="input-grid">
+              <div className="input-group">
+                <label for="tempWarnMin">Warning minimum (°C)</label>
+                <input
+                  id="tempWarnMin"
+                  type="number"
+                  min="5"
+                  max="tempWarningMax"
+                  step="0.5"
+                  value=${tempWarningMin}
+                  onInput=${(event) => handleNumberChange('temperature__warning_minimum', event.target.value)}
+                />
+              </div>
+              <div className="input-group">
+                <label for="tempWarnMax">Warning maximum (°C)</label>
+                <input
+                  id="tempWarnMax"
+                  type="number"
+                  min="tempWarningMin"
+                  max="40"
+                  step="0.5"
+                  value=${tempWarningMax}
+                  onInput=${(event) => handleNumberChange('temperature__warning_maximum', event.target.value)}
                 />
               </div>
             </div>
@@ -642,10 +696,13 @@ export function Dashboard() {
       }
       case 'water': {
         const calibrated = getBoolean('binary_sensor', 'water_calibrated')
-        return modalBase(
+            return modalBase(
           'Water Reservoir Calibration',
           html`
             <p>Empty and dry the water reservoir, then start the calibration routine.</p>
+            ${calibrationStatus
+              ? html`<p className="field-note">Current status: ${calibrationStatus}</p>`
+              : null}
             <button
               className="primary-button"
               onClick=${() => {
@@ -671,63 +728,101 @@ export function Dashboard() {
         return modalBase(
           'Device Settings & Maintenance',
           html`
-            <div className="input-group">
-              <label for="timezoneSelect">Timezone</label>
-              <select id="timezoneSelect" value=${timezone} onChange=${(event) => handleTimezoneChange(event.target.value)}>
-                ${TIMEZONE_OPTIONS.map((tz) => html`<option value=${tz.value}>${tz.label}</option>`)}
-              </select>
-            </div>
-            <div className="input-group">
-              <label>Open-source licenses</label>
-              <button className="chip-button" onClick=${() => setShowLicense((prev) => !prev)}>
-                ${showLicense ? 'Hide licenses' : 'Show licenses'}
-              </button>
-              ${showLicense ? html`<pre className="license-log">${licensesText}</pre>` : null}
-            </div>
-            <div className="input-group">
-              <label>Firmware update (OTA)</label>
-              <input
-                type="file"
-                accept=".bin"
-                disabled=${otaStatus === 'uploading'}
-                onChange=${(event) => {
-                  const file = event.target.files?.[0]
-                  if (file) {
-                    setOtaFile(file)
-                    setOtaStatus('idle')
-                    setOtaMessage('')
-                  }
-                }}
-              />
-              ${otaFile
-                ? html`<p className="file-helper">${otaFile.name} · ${(otaFile.size / (1024 * 1024)).toFixed(2)} MB</p>`
-                : null}
-              <div className="button-row">
-                <button
-                  className="primary-button"
-                  disabled=${!otaFile || otaStatus === 'uploading'}
-                  onClick=${handleOtaUpload}
-                >
-                  ${otaStatus === 'uploading' ? 'Uploading…' : 'Upload firmware'}
-                </button>
-                <button
-                  className="secondary-button"
-                  disabled=${otaStatus === 'uploading'}
-                  onClick=${() => {
-                    setOtaFile(null)
-                    setOtaStatus('idle')
-                    setOtaProgress(0)
-                    setOtaMessage('')
-                  }}
-                >
-                  Clear selection
-                </button>
+            <section className="settings-section">
+              <h3>System</h3>
+              <div className="info-grid">
+                <div className="info-row">
+                  <span className="info-label">Input voltage</span>
+                  <span className="info-value">${voltageDisplay}</span>
+                </div>
+                <div className="info-row">
+                  <span className="info-label">Last snapshot</span>
+                  <span className="info-value">${lastUpdateDisplay}</span>
+                </div>
               </div>
-              ${otaStatus !== 'idle' ? html`<p className="status-text ${otaStatus}">${otaMessage}</p>` : null}
-              ${otaStatus === 'uploading'
-                ? html`<div className="progress"><div style=${{ width: `${otaProgress}%` }}></div></div>`
-                : null}
-            </div>
+            </section>
+            <section className="settings-section">
+              <h3>Network</h3>
+              <div className="info-grid">
+                <div className="info-row">
+                  <span className="info-label">Mode</span>
+                  <span className="info-value">${wifiMode}</span>
+                </div>
+                <div className="info-row">
+                  <span className="info-label">SSID</span>
+                  <span className="info-value">${wifiSSID}</span>
+                </div>
+                <div className="info-row">
+                  <span className="info-label">Device IP</span>
+                  <span className="info-value">${ipAddress}</span>
+                </div>
+              </div>
+            </section>
+            <section className="settings-section">
+              <h3>Time & locale</h3>
+              <div className="input-group">
+                <label for="timezoneSelect">Timezone</label>
+                <select id="timezoneSelect" value=${timezone} onChange=${(event) => handleTimezoneChange(event.target.value)}>
+                  ${TIMEZONE_OPTIONS.map((tz) => html`<option value=${tz.value}>${tz.label}</option>`)}
+                </select>
+              </div>
+            </section>
+            <section className="settings-section">
+              <h3>Licenses</h3>
+              <div className="input-group">
+                <label>Open-source notices</label>
+                <button className="chip-button" onClick=${() => setShowLicense((prev) => !prev)}>
+                  ${showLicense ? 'Hide licenses' : 'Show licenses'}
+                </button>
+                ${showLicense ? html`<pre className="license-log">${licensesText}</pre>` : null}
+              </div>
+            </section>
+            <section className="settings-section">
+              <h3>Firmware update (OTA)</h3>
+              <div className="input-group">
+                <input
+                  type="file"
+                  accept=".bin"
+                  disabled=${otaStatus === 'uploading'}
+                  onChange=${(event) => {
+                    const file = event.target.files?.[0]
+                    if (file) {
+                      setOtaFile(file)
+                      setOtaStatus('idle')
+                      setOtaMessage('')
+                    }
+                  }}
+                />
+                ${otaFile
+                  ? html`<p className="file-helper">${otaFile.name} · ${(otaFile.size / (1024 * 1024)).toFixed(2)} MB</p>`
+                  : null}
+                <div className="button-row">
+                  <button
+                    className="primary-button"
+                    disabled=${!otaFile || otaStatus === 'uploading'}
+                    onClick=${handleOtaUpload}
+                  >
+                    ${otaStatus === 'uploading' ? 'Uploading…' : 'Upload firmware'}
+                  </button>
+                  <button
+                    className="secondary-button"
+                    disabled=${otaStatus === 'uploading'}
+                    onClick=${() => {
+                      setOtaFile(null)
+                      setOtaStatus('idle')
+                      setOtaProgress(0)
+                      setOtaMessage('')
+                    }}
+                  >
+                    Clear selection
+                  </button>
+                </div>
+                ${otaStatus !== 'idle' ? html`<p className="status-text ${otaStatus}">${otaMessage}</p>` : null}
+                ${otaStatus === 'uploading'
+                  ? html`<div className="progress"><div style=${{ width: `${otaProgress}%` }}></div></div>`
+                  : null}
+              </div>
+            </section>
           `,
         )
       }

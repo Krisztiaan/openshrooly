@@ -6,6 +6,8 @@ const DEFAULT_NUMBER_IDS = [
   'temperature__hysteresis',
   'temperature__minimum',
   'temperature__maximum',
+  'temperature__warning_minimum',
+  'temperature__warning_maximum',
   'air_exchange__period__min_',
   'air_exchange__run_duration__s_',
   'air_exchange__speed',
@@ -29,7 +31,7 @@ const DEFAULT_BINARY_SENSOR_IDS = [
   'alert__temperature_too_low',
   'alert__temperature_too_high',
 ]
-const DEFAULT_TEXT_SENSOR_IDS = ['licenses']
+const DEFAULT_TEXT_SENSOR_IDS = ['licenses', 'wifi_mode', 'wifi_ssid', 'ip_address', 'calibration_status']
 
 class ESPHomeAPI {
   constructor(baseUrl = null) {
@@ -149,7 +151,15 @@ class ESPHomeAPI {
   async fetchSnapshot({
     numberIds = DEFAULT_NUMBER_IDS,
     switchIds = DEFAULT_SWITCH_IDS,
-    sensorIds = ['temperature', 'current_temperature', 'humidity', 'current_humidity', 'water_level_percent', 'water_level'],
+    sensorIds = [
+      'temperature',
+      'current_temperature',
+      'humidity',
+      'current_humidity',
+      'water_level_percent',
+      'water_level',
+      'system_voltage',
+    ],
     binarySensorIds = DEFAULT_BINARY_SENSOR_IDS,
     textSensorIds = DEFAULT_TEXT_SENSOR_IDS,
     selectIds = ['timezone_select'],
