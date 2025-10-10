@@ -114,6 +114,14 @@ export function Dashboard() {
     stopReconnect()
   }
 
+  const blockControlsIfUnavailable = (message) => {
+    if (!isOnline || connection.status === 'offline') {
+      setBanner({ tone: 'warning', message: message || 'Controls are disabled while the device is offline. Viewing cached data only.' })
+      return true
+    }
+    return false
+  }
+
   const refreshSnapshot = async ({ silent = false } = {}) => {
     try {
       const snapshot = await api.fetchSnapshot()
@@ -129,8 +137,9 @@ export function Dashboard() {
       return true
     } catch (error) {
       console.error('Snapshot failed', error)
+      setConnection({ status: 'offline', detail: 'Device unreachable. Showing last known readings.' })
       if (!silent) {
-        setBanner({ tone: 'critical', message: 'Could not refresh from the device. Check the connection and try again.' })
+        setBanner({ tone: 'critical', message: 'Could not reach the device. Controls are disabled until the connection returns.' })
       }
       return false
     }
@@ -251,6 +260,7 @@ export function Dashboard() {
   }, [banner])
 
   const handleNumberChange = (id, value) => {
+    if (blockControlsIfUnavailable()) return
     const numericValue = Number(value)
     if (Number.isNaN(numericValue)) return
     const key = `number-${id}`
@@ -262,10 +272,12 @@ export function Dashboard() {
   }
 
   const handleButtonClick = async (buttonId) => {
+    if (blockControlsIfUnavailable()) return
     await api.pressButton(buttonId)
   }
 
   const handleSwitchChange = async (id, checked) => {
+    if (blockControlsIfUnavailable()) return
     const key = `switch-${id}`
     setEntities((prev) => ({
       ...prev,
@@ -275,16 +287,19 @@ export function Dashboard() {
   }
 
   const handleSelectChange = async (id, option) => {
+    if (blockControlsIfUnavailable()) return
     await api.setSelect(id, option)
     setEntities((prev) => ({ ...prev, [`select-${id}`]: { ...(prev[`select-${id}`] || {}), state: option } }))
   }
 
   const handleTimezoneChange = async (tz) => {
     setTimezone(tz)
+    if (blockControlsIfUnavailable()) return
     await handleSelectChange('timezone_select', tz)
   }
 
   const handleOtaUpload = async () => {
+    if (blockControlsIfUnavailable('Cannot upload firmware while offline.')) return
     if (!otaFile) {
       setOtaMessage('Please select a firmware file before uploading.')
       setOtaStatus('error')
@@ -416,6 +431,10 @@ export function Dashboard() {
   const lastUpdateDisplay = lastUpdate
     ? lastUpdate.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })
     : 'No data yet'
+  const controlsDisabled = !isOnline || connection.status === 'offline'
+  const viewOnlyNotice = controlsDisabled
+    ? html`<div className="info-banner warning">Device offline: settings are read-only until the connection returns.</div>`
+    : null
 
   const alerts = useMemo(
     () => ALERTS.filter((alert) => getBoolean('binary_sensor', `alert__${alert.id}`)),
@@ -462,6 +481,7 @@ export function Dashboard() {
         return modalBase(
           'Humidity Control',
           html`
+            ${viewOnlyNotice}
             <div className="input-group">
               <label for="targetHumidity">Target humidity (%)</label>
               <input
@@ -471,6 +491,7 @@ export function Dashboard() {
                 max="95"
                 step="0.5"
                 value=${targetHumidity}
+                disabled=${controlsDisabled}
                 onInput=${(event) => handleNumberChange('target_humidity', event.target.value)}
               />
             </div>
@@ -483,6 +504,7 @@ export function Dashboard() {
                 max="5"
                 step="0.25"
                 value=${humidityHysteresis}
+                disabled=${controlsDisabled}
                 onInput=${(event) => handleNumberChange('humidity__hysteresis', event.target.value)}
               />
             </div>
@@ -493,6 +515,7 @@ export function Dashboard() {
                   (preset) => html`
                     <button
                       className="chip-button"
+                      disabled=${controlsDisabled}
                       onClick=${() => {
                         handleNumberChange('target_humidity', preset.target)
                         handleNumberChange('humidity__hysteresis', preset.hysteresis)
@@ -514,6 +537,7 @@ export function Dashboard() {
                 max="100"
                 step="5"
                 value=${humidifierSpeed}
+                disabled=${controlsDisabled}
                 onInput=${(event) => handleNumberChange('humidifier__speed', event.target.value)}
               />
               <p className="field-hint">Higher speeds add humidity faster but increase noise and water consumption.</p>
@@ -525,11 +549,13 @@ export function Dashboard() {
         return modalBase(
           'Temperature Guard',
           html`
+            ${viewOnlyNotice}
             <div className="toggle-row">
               <label className="toggle">
                 <input
                   type="checkbox"
                   checked=${tempControlEnabled}
+                  disabled=${controlsDisabled}
                   onChange=${(event) => handleSwitchChange('temperature_control_enabled', event.target.checked)}
                 />
                 <span>Maintain ${tempTarget.toFixed(1)}°C ± ${tempHysteresis.toFixed(1)}°C</span>
@@ -545,6 +571,7 @@ export function Dashboard() {
                   max="30"
                   step="0.5"
                   value=${tempTarget}
+                  disabled=${controlsDisabled}
                   onInput=${(event) => handleNumberChange('temperature__target', event.target.value)}
                 />
               </div>
@@ -557,6 +584,7 @@ export function Dashboard() {
                   max="3"
                   step="0.25"
                   value=${tempHysteresis}
+                  disabled=${controlsDisabled}
                   onInput=${(event) => handleNumberChange('temperature__hysteresis', event.target.value)}
                 />
               </div>
@@ -574,6 +602,7 @@ export function Dashboard() {
                   max="tempWarningMax"
                   step="0.5"
                   value=${tempWarningMin}
+                  disabled=${controlsDisabled}
                   onInput=${(event) => handleNumberChange('temperature__warning_minimum', event.target.value)}
                 />
               </div>
@@ -586,6 +615,7 @@ export function Dashboard() {
                   max="40"
                   step="0.5"
                   value=${tempWarningMax}
+                  disabled=${controlsDisabled}
                   onInput=${(event) => handleNumberChange('temperature__warning_maximum', event.target.value)}
                 />
               </div>
@@ -600,6 +630,7 @@ export function Dashboard() {
         return modalBase(
           'Fresh Air Cycle',
           html`
+            ${viewOnlyNotice}
             <div className="input-grid">
               <div className="input-group">
                 <label for="airPeriod">Cycle period (minutes)</label>
@@ -610,6 +641,7 @@ export function Dashboard() {
                   max="180"
                   step="5"
                   value=${period}
+                  disabled=${controlsDisabled}
                   onInput=${(event) => handleNumberChange('air_exchange__period__min_', event.target.value)}
                 />
               </div>
@@ -622,6 +654,7 @@ export function Dashboard() {
                   max="600"
                   step="5"
                   value=${runDuration}
+                  disabled=${controlsDisabled}
                   onInput=${(event) => handleNumberChange('air_exchange__run_duration__s_', event.target.value)}
                 />
               </div>
@@ -635,6 +668,7 @@ export function Dashboard() {
                 max="100"
                 step="5"
                 value=${speed}
+                disabled=${controlsDisabled}
                 onInput=${(event) => handleNumberChange('air_exchange__speed', event.target.value)}
               />
             </div>
@@ -645,11 +679,13 @@ export function Dashboard() {
         return modalBase(
           'Lighting Plan',
           html`
+            ${viewOnlyNotice}
             <div className="input-group">
               <label for="sunriseSelect">Sunrise</label>
               <select
                 id="sunriseSelect"
                 value=${lightsSunrise}
+                disabled=${controlsDisabled}
                 onChange=${(event) => handleNumberChange('lights__sunrise_hour', event.target.value)}
               >
                 ${Array.from({ length: 48 }, (_, index) => index * 0.5).map(
@@ -659,39 +695,42 @@ export function Dashboard() {
             </div>
             <div className="input-group">
               <label for="lightDuration">Duration (hours)</label>
-              <input
-                id="lightDuration"
-                type="number"
-                min="1"
-                max="24"
-                step="0.25"
-                value=${lightsDuration}
-                onInput=${(event) => handleNumberChange('lights__duration__hours_', event.target.value)}
-              />
-            </div>
-            <div className="input-group">
-              <label for="canopyLux">Canopy brightness (lux)</label>
-              <input
-                id="canopyLux"
-                type="number"
-                min="0"
-                max="4000"
-                step="10"
-                value=${luxValue}
-                onInput=${(event) => handleNumberChange('white_led_intensity', event.target.value)}
-              />
-            </div>
-            <div className="input-group">
-              <label for="accentColor">Accent color</label>
-              <input
-                id="accentColor"
-                type="color"
-                value=${currentColor}
-                onInput=${(event) => {
-                  const rgb = hexToRgb(event.target.value)
-                  handleNumberChange('red_led_intensity', rgb.r)
-                  handleNumberChange('green_led_intensity', rgb.g)
-                  handleNumberChange('blue_led_intensity', rgb.b)
+                <input
+                  id="lightDuration"
+                  type="number"
+                  min="1"
+                  max="24"
+                  step="0.25"
+                  value=${lightsDuration}
+                  disabled=${controlsDisabled}
+                  onInput=${(event) => handleNumberChange('lights__duration__hours_', event.target.value)}
+                />
+              </div>
+              <div className="input-group">
+                <label for="canopyLux">Canopy brightness (lux)</label>
+                <input
+                  id="canopyLux"
+                  type="number"
+                  min="0"
+                  max="4000"
+                  step="10"
+                  value=${luxValue}
+                  disabled=${controlsDisabled}
+                  onInput=${(event) => handleNumberChange('white_led_intensity', event.target.value)}
+                />
+              </div>
+              <div className="input-group">
+                <label for="accentColor">Accent color</label>
+                <input
+                  id="accentColor"
+                  type="color"
+                  value=${currentColor}
+                  disabled=${controlsDisabled}
+                  onInput=${(event) => {
+                    const rgb = hexToRgb(event.target.value)
+                    handleNumberChange('red_led_intensity', rgb.r)
+                    handleNumberChange('green_led_intensity', rgb.g)
+                    handleNumberChange('blue_led_intensity', rgb.b)
                 }}
               />
             </div>
@@ -703,12 +742,14 @@ export function Dashboard() {
             return modalBase(
           'Water Reservoir Calibration',
           html`
+            ${viewOnlyNotice}
             <p>Empty and dry the water reservoir, then start the calibration routine.</p>
             ${calibrationStatus
               ? html`<p className="field-note">Current status: ${calibrationStatus}</p>`
               : null}
             <button
               className="primary-button"
+              disabled=${controlsDisabled}
               onClick=${() => {
                 handleButtonClick('calibrate_dry_tank')
                 setTimeout(() => {
@@ -732,6 +773,7 @@ export function Dashboard() {
         return modalBase(
           'Device Settings & Maintenance',
           html`
+            ${viewOnlyNotice}
             <section className="settings-section">
               <h3>System</h3>
               <div className="info-grid">
@@ -770,7 +812,7 @@ export function Dashboard() {
               <h3>Time & locale</h3>
               <div className="input-group">
                 <label for="timezoneSelect">Timezone</label>
-                <select id="timezoneSelect" value=${timezone} onChange=${(event) => handleTimezoneChange(event.target.value)}>
+                <select id="timezoneSelect" value=${timezone} disabled=${controlsDisabled} onChange=${(event) => handleTimezoneChange(event.target.value)}>
                   ${TIMEZONE_OPTIONS.map((tz) => html`<option value=${tz.value}>${tz.label}</option>`)}
                 </select>
               </div>
@@ -791,7 +833,7 @@ export function Dashboard() {
                 <input
                   type="file"
                   accept=".bin"
-                  disabled=${otaStatus === 'uploading'}
+                  disabled=${controlsDisabled || otaStatus === 'uploading'}
                   onChange=${(event) => {
                     const file = event.target.files?.[0]
                     if (file) {
@@ -807,14 +849,14 @@ export function Dashboard() {
                 <div className="button-row">
                   <button
                     className="primary-button"
-                    disabled=${!otaFile || otaStatus === 'uploading'}
+                    disabled=${controlsDisabled || !otaFile || otaStatus === 'uploading'}
                     onClick=${handleOtaUpload}
                   >
                     ${otaStatus === 'uploading' ? 'Uploading…' : 'Upload firmware'}
                   </button>
                   <button
                     className="secondary-button"
-                    disabled=${otaStatus === 'uploading'}
+                    disabled=${controlsDisabled || otaStatus === 'uploading'}
                     onClick=${() => {
                       setOtaFile(null)
                       setOtaStatus('idle')
@@ -834,13 +876,13 @@ export function Dashboard() {
             <section className="settings-section">
               <h3>Maintenance</h3>
               <div className="button-row">
-                <button className="secondary-button" onClick=${() => handleButtonClick('beeper_test')}>
+                <button className="secondary-button" disabled=${controlsDisabled} onClick=${() => handleButtonClick('beeper_test')}>
                   Play beeper test
                 </button>
-                <button className="secondary-button" onClick=${() => handleButtonClick('restart_openshrooly')}>
+                <button className="secondary-button" disabled=${controlsDisabled} onClick=${() => handleButtonClick('restart_openshrooly')}>
                   Restart controller
                 </button>
-                <button className="secondary-button" onClick=${() => handleButtonClick('reprogram_rp2040_coprocessor')}>
+                <button className="secondary-button" disabled=${controlsDisabled} onClick=${() => handleButtonClick('reprogram_rp2040_coprocessor')}>
                   Reprogram coprocessor
                 </button>
               </div>
@@ -866,13 +908,17 @@ export function Dashboard() {
             <span className="pill-indicator"></span>${connectionMeta.label}
           </span>
           <button className="ghost-button" onClick=${manualRefresh}>Sync now</button>
-          <select className="header-select" value=${timezone} onChange=${(event) => handleTimezoneChange(event.target.value)}>
+          <select className="header-select" value=${timezone} disabled=${controlsDisabled} onChange=${(event) => handleTimezoneChange(event.target.value)}>
             ${TIMEZONE_OPTIONS.map((tz) => html`<option value=${tz.value}>${tz.label}</option>`)}
           </select>
         </div>
       </header>
 
       <p className="connection-help">${connection.detail || connectionMeta.detail}</p>
+
+      ${controlsDisabled
+        ? html`<div className="info-banner warning">Device unreachable. Showing cached values; controls are disabled until the connection returns.</div>`
+        : null}
 
       ${banner
         ? html`<div className=${`info-banner ${banner.tone}`}>${banner.message}</div>`
@@ -973,18 +1019,21 @@ export function Dashboard() {
           </header>
           <div className="control-grid">
             <label className="control-toggle">
-              <input type="checkbox" checked=${humidifierOn} onChange=${(event) => handleSwitchChange('humidifier', event.target.checked)} />
+              <input type="checkbox" checked=${humidifierOn} disabled=${controlsDisabled} onChange=${(event) => handleSwitchChange('humidifier', event.target.checked)} />
               <span>Humidifier</span>
             </label>
             <label className="control-toggle">
-              <input type="checkbox" checked=${airExchangeOn} onChange=${(event) => handleSwitchChange('air_exchange', event.target.checked)} />
+              <input type="checkbox" checked=${airExchangeOn} disabled=${controlsDisabled} onChange=${(event) => handleSwitchChange('air_exchange', event.target.checked)} />
               <span>Air exchange</span>
             </label>
             <label className="control-toggle">
-              <input type="checkbox" checked=${bleEnabled} onChange=${(event) => handleSwitchChange('ble_enabled', event.target.checked)} />
+              <input type="checkbox" checked=${bleEnabled} disabled=${controlsDisabled} onChange=${(event) => handleSwitchChange('ble_enabled', event.target.checked)} />
               <span>BLE service</span>
             </label>
             <button className="secondary-button" onClick=${() => setModal('settings')}>Open settings & OTA</button>
+            ${controlsDisabled
+              ? html`<p className="field-hint">Controls are temporarily disabled while the device is offline.</p>`
+              : null}
           </div>
         </section>
       </main>
