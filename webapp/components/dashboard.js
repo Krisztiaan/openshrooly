@@ -641,6 +641,7 @@ export function Dashboard() {
   )
   const heatRequested = useMemo(() => getBoolean('binary_sensor', 'heat_requested'), [entities])
   const bleEnabled = useMemo(() => getBoolean('switch', 'ble_enabled'), [entities])
+  const timezoneGroups = useMemo(() => buildTimezoneGroups(timezone), [timezone])
   const timezoneLabel = useMemo(() => {
     const flat = timezoneGroups.flatMap((group) => group.options)
     const match = flat.find((option) => option.value === timezone)
@@ -662,7 +663,6 @@ export function Dashboard() {
   const viewOnlyNotice = controlsDisabled
     ? html`<div className="info-banner warning">Device offline: settings are read-only until the connection returns.</div>`
     : null
-  const timezoneGroups = useMemo(() => buildTimezoneGroups(timezone), [timezone])
 
   const alerts = useMemo(
     () => ALERTS.filter((alert) => getBoolean('binary_sensor', `alert__${alert.id}`)),
