@@ -229,7 +229,8 @@ const CONNECTION_META = {
   offline: { label: 'Offline', tone: 'critical', detail: 'Device unreachable. Join the same Wi‑Fi as the OpenShrooly to resume.' },
 }
 
-const REFRESH_INTERVAL_MS = 5000
+const BASE_POLL_MS = 5000
+const MAX_POLL_MS = 60000
 const RECONNECT_INTERVAL_MS = 15000
 
 const formatTime = (hour) => {
@@ -279,6 +280,7 @@ export function Dashboard() {
   const pollTimerRef = useRef(null)
   const reconnectTimerRef = useRef(null)
   const initialSnapshotTaken = useRef(false)
+  const retryDelayRef = useRef(BASE_POLL_MS)
 
   const mergeEntities = (patch) => {
     setEntities((prev) => ({ ...prev, ...patch }))
@@ -293,7 +295,7 @@ export function Dashboard() {
 
   const stopPolling = () => {
     if (pollTimerRef.current) {
-      clearInterval(pollTimerRef.current)
+      clearTimeout(pollTimerRef.current)
       pollTimerRef.current = null
     }
   }
@@ -339,6 +341,12 @@ export function Dashboard() {
         initialSnapshotTaken.current = true
         setLoading(false)
       }
+      setConnection((prev) => {
+        if (prev.status === 'offline') {
+          return { status: 'polling', detail: CONNECTION_META.polling.detail }
+        }
+        return prev
+      })
       if (!silent) setBanner({ tone: 'positive', message: 'Dashboard updated just now.' })
       return true
     } catch (error) {
@@ -365,13 +373,17 @@ export function Dashboard() {
 
   const startPolling = (detail = CONNECTION_META.polling.detail) => {
     stopEventStream()
-    if (!pollTimerRef.current) {
-      pollTimerRef.current = setInterval(() => {
-        refreshSnapshot({ silent: true })
-      }, REFRESH_INTERVAL_MS)
-    }
+    stopPolling()
+    retryDelayRef.current = BASE_POLL_MS
     setConnection({ status: 'polling', detail })
-    refreshSnapshot({ silent: true })
+
+    const poll = async () => {
+      const ok = await refreshSnapshot({ silent: true })
+      retryDelayRef.current = ok ? BASE_POLL_MS : Math.min(MAX_POLL_MS, retryDelayRef.current * 2)
+      pollTimerRef.current = setTimeout(poll, retryDelayRef.current)
+    }
+
+    poll()
     scheduleReconnect()
   }
 
