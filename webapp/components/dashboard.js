@@ -2,9 +2,14 @@ import { h } from "../vendor/preact.module.js";
 import { useState, useEffect, useRef } from "../vendor/hooks.module.js";
 import htm from "../vendor/htm.module.js";
 import { api } from "../lib/esphome-api.js";
+import { loadPreferences, savePreferences, getSystemTimezone } from "../lib/preferences.js";
+import { buildTimezoneGroups } from "../lib/timezones.js";
+import { formatTime, formatSinceShort, rgbToHex, hexToRgb } from "../lib/format.js";
 import { SettingsRow } from "./settings-row.js";
 import { ModalSheet } from "./modal-sheet.js";
 import { ToggleSwitch } from "./toggle-switch.js";
+import { OverviewSection } from "./overview-section.js";
+import { getNumeric, getBoolean, getText } from "../lib/entities.js";
 
 const html = htm.bind(h);
 
@@ -78,241 +83,11 @@ const FALLBACK_TIMEZONES = [
   "Pacific/Honolulu",
 ];
 
-const POPULAR_TIMEZONES = [
-  "America/Los_Angeles",
-  "America/Denver",
-  "America/New_York",
-  "Europe/London",
-  "Europe/Berlin",
-  "Asia/Tokyo",
-  "Australia/Sydney",
-];
-
-const PREF_KEY = "openshrooly:prefs";
-const SYSTEM_TIME_ZONE =
-  typeof Intl !== "undefined"
-    ? Intl.DateTimeFormat().resolvedOptions().timeZone
-    : null;
-
-const loadPreferences = () => {
-  if (typeof window === "undefined") return {};
-  try {
-    const raw = window.localStorage.getItem(PREF_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === "object") return parsed;
-    }
-  } catch (error) {
-    console.warn("[prefs] Failed to load preferences", error);
-  }
-  return {};
-};
-
-const savePreferences = (prefs) => {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(PREF_KEY, JSON.stringify(prefs));
-  } catch (error) {
-    console.warn("[prefs] Failed to save preferences", error);
-  }
-};
-
-const getSupportedTimeZones = () => {
-  if (
-    typeof Intl !== "undefined" &&
-    typeof Intl.supportedValuesOf === "function"
-  ) {
-    try {
-      return Intl.supportedValuesOf("timeZone");
-    } catch (error) {
-      console.warn("[tz] Unable to query supported time zones", error);
-    }
-  }
-  return FALLBACK_TIMEZONES;
-};
-
-const computeOffsetLabel = (zone) => {
-  if (typeof Intl === "undefined") return "";
-  try {
-    const formatter = new Intl.DateTimeFormat("en-US", {
-      hour: "2-digit",
-      minute: "2-digit",
-      timeZone: zone,
-      timeZoneName: "shortOffset",
-    });
-    const parts = formatter.formatToParts(new Date());
-    const tzName = parts.find((part) => part.type === "timeZoneName")?.value;
-    if (!tzName) return "";
-    if (tzName.startsWith("GMT")) return tzName.replace("GMT", "UTC");
-    return tzName;
-  } catch (error) {
-    console.warn("[tz] Failed to compute offset for", zone, error);
-    return "";
-  }
-};
-
-const prettifyZone = (zone) => {
-  const parts = zone.split("/");
-  const region = (parts.shift() || "Other").replace(/_/g, " ");
-  const city = parts.length
-    ? parts.map((part) => part.replace(/_/g, " ")).join(" / ")
-    : region;
-  return { region, city };
-};
-
-const createTimezoneOption = (zone, localZone) => {
-  const { region, city } = prettifyZone(zone);
-  const offset = computeOffsetLabel(zone);
-  const labelParts = [];
-  if (offset) labelParts.push(`(${offset})`);
-  labelParts.push(city);
-  if (city !== region) labelParts.push(`— ${region}`);
-  const baseLabel = labelParts.join(" ");
-  const renderLabel =
-    zone === localZone ? `${baseLabel} • Local device` : baseLabel;
-  const shortLabelParts = [];
-  if (offset) shortLabelParts.push(offset);
-  shortLabelParts.push(city);
-  const shortLabel = shortLabelParts.join(" ");
-  return {
-    value: zone,
-    label: renderLabel,
-    baseLabel,
-    shortLabel,
-    region,
-  };
-};
-
-const buildTimezoneGroups = (selectedZone) => {
-  const localZone = SYSTEM_TIME_ZONE;
-  const supported = getSupportedTimeZones();
-  const allZones = new Set([...supported, ...FALLBACK_TIMEZONES]);
-  if (localZone) allZones.add(localZone);
-  if (selectedZone) allZones.add(selectedZone);
-
-  const optionCache = new Map();
-  const getOption = (zone) => {
-    if (!optionCache.has(zone))
-      optionCache.set(zone, createTimezoneOption(zone, localZone));
-    return optionCache.get(zone);
-  };
-
-  const priorityZones = [...POPULAR_TIMEZONES];
-  if (localZone && !priorityZones.includes(localZone))
-    priorityZones.unshift(localZone);
-  if (selectedZone && !priorityZones.includes(selectedZone))
-    priorityZones.unshift(selectedZone);
-
-  const seen = new Set();
-  const groups = [];
-  const popularOptions = [];
-
-  priorityZones.forEach((zone) => {
-    if (!allZones.has(zone) || seen.has(zone)) return;
-    popularOptions.push(getOption(zone));
-    seen.add(zone);
-  });
-
-  if (popularOptions.length) {
-    groups.push({ label: "Popular & recent", options: popularOptions });
-  }
-
-  const regionBuckets = new Map();
-  Array.from(allZones)
-    .sort((a, b) => a.localeCompare(b))
-    .forEach((zone) => {
-      if (seen.has(zone)) return;
-      const option = getOption(zone);
-      const region = option.region || "Other";
-      if (!regionBuckets.has(region)) regionBuckets.set(region, []);
-      regionBuckets.get(region).push(option);
-    });
-
-  Array.from(regionBuckets.keys())
-    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }))
-    .forEach((region) => {
-      const options = regionBuckets
-        .get(region)
-        .sort((a, b) =>
-          a.label.localeCompare(b.label, undefined, { sensitivity: "base" })
-        );
-      groups.push({ label: region, options });
-    });
-
-  return groups;
-};
-
-const CONNECTION_META = {
-  connecting: {
-    label: "Connecting",
-    tone: "calm",
-    detail: "Looking for the OpenShrooly on your network…",
-  },
-  streaming: {
-    label: "Live",
-    tone: "positive",
-    detail: "Realtime updates are active.",
-  },
-  polling: {
-    label: "Snapshots",
-    tone: "warning",
-    detail: "",
-  },
-  offline: {
-    label: "Offline",
-    tone: "critical",
-    detail: "",
-  },
-};
+const SYSTEM_TIME_ZONE = getSystemTimezone();
 
 const BASE_POLL_MS = 5000;
 const MAX_POLL_MS = 15000;
 const RECONNECT_INTERVAL_MS = 15000;
-
-const formatTime = (hour) => {
-  const h = Math.floor(hour);
-  const m = Math.round((hour - h) * 60);
-  return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}`;
-};
-
-const rgbToHex = (r, g, b) => {
-  const toHex = (n) => {
-    const hex = Math.round((n / 100) * 255).toString(16);
-    return hex.length === 1 ? "0" + hex : hex;
-  };
-  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
-};
-
-const hexToRgb = (hex) => {
-  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-  return result
-    ? {
-        r: Math.round((parseInt(result[1], 16) / 255) * 100),
-        g: Math.round((parseInt(result[2], 16) / 255) * 100),
-        b: Math.round((parseInt(result[3], 16) / 255) * 100),
-      }
-    : { r: 0, g: 0, b: 0 };
-};
-
-const formatSinceShort = (date) => {
-  if (!date) return "";
-  const diffMs = Date.now() - date.getTime();
-  if (diffMs < 0) return "";
-  const seconds = Math.floor(diffMs / 1000);
-  if (seconds < 60) return `${Math.max(1, seconds)}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d`;
-  const weeks = Math.floor(days / 7);
-  if (weeks < 5) return `${weeks}w`;
-  const months = Math.floor(days / 30);
-  if (months < 12) return `${months}mo`;
-  const years = Math.floor(days / 365);
-  return `${years}y`;
-};
 
 export function Dashboard() {
   const [entities, setEntities] = useState({});
@@ -699,35 +474,18 @@ export function Dashboard() {
     }
   };
 
-  const getNumeric = (prefix, id, fallback = 0) => {
-    const entity = entities[`${prefix}-${id}`];
-    const raw = entity?.value ?? entity?.state;
-    const value = typeof raw === "number" ? raw : parseFloat(raw);
-    return Number.isFinite(value) ? value : fallback;
-  };
-
-  const getBoolean = (prefix, id) => {
-    const entity = entities[`${prefix}-${id}`];
-    if (!entity) return false;
-    if (typeof entity.value === "boolean") return entity.value;
-    if (typeof entity.state === "boolean") return entity.state;
-    return entity.state === "ON";
-  };
-
-  const getText = (id) => entities[`text_sensor-${id}`]?.state ?? "";
-
   const humidity =
-    getNumeric("sensor", "humidity") ||
-    getNumeric("sensor", "current_humidity");
-  const targetHumidity = getNumeric("number", "target_humidity", 70);
-  const humidityHysteresis = getNumeric("number", "humidity__hysteresis", 2);
-  const humidifierSpeed = getNumeric("number", "humidifier__speed", 80);
+    getNumeric(entities, "sensor", "humidity") ||
+    getNumeric(entities, "sensor", "current_humidity");
+  const targetHumidity = getNumeric(entities, "number", "target_humidity", 70);
+  const humidityHysteresis = getNumeric(entities, "number", "humidity__hysteresis", 2);
+  const humidifierSpeed = getNumeric(entities, "number", "humidifier__speed", 80);
 
   const temperature =
-    getNumeric("sensor", "temperature") ||
-    getNumeric("sensor", "current_temperature");
-  const tempTarget = getNumeric("number", "temperature__target", 22);
-  const tempHysteresis = getNumeric("number", "temperature__hysteresis", 1);
+    getNumeric(entities, "sensor", "temperature") ||
+    getNumeric(entities, "sensor", "current_temperature");
+  const tempTarget = getNumeric(entities, "number", "temperature__target", 22);
+  const tempHysteresis = getNumeric(entities, "number", "temperature__hysteresis", 1);
   const tempControlEnabled = getBoolean(
     "switch",
     "temperature_control_enabled"
@@ -736,22 +494,22 @@ export function Dashboard() {
   const tempMax = tempControlEnabled ? tempTarget + tempHysteresis : 0;
 
   const waterLevel = (() => {
-    const primary = getNumeric("sensor", "water_level_percent");
+    const primary = getNumeric(entities, "sensor", "water_level_percent");
     if (Number.isFinite(primary)) return primary;
-    const fallbackValue = getNumeric("sensor", "water_level");
+    const fallbackValue = getNumeric(entities, "sensor", "water_level");
     return Number.isFinite(fallbackValue) ? fallbackValue : NaN;
   })();
-  const systemVoltage = getNumeric("sensor", "system_voltage", NaN);
-  const fanRpm = getNumeric("sensor", "current_air_exchange_fan_speed", NaN);
+  const systemVoltage = getNumeric(entities, "sensor", "system_voltage", NaN);
+  const fanRpm = getNumeric(entities, "sensor", "current_air_exchange_fan_speed", NaN);
 
-  const lightsSunrise = getNumeric("number", "lights__sunrise_hour", 8);
-  const lightsDuration = getNumeric("number", "lights__duration__hours_", 12);
+  const lightsSunrise = getNumeric(entities, "number", "lights__sunrise_hour", 8);
+  const lightsDuration = getNumeric(entities, "number", "lights__duration__hours_", 12);
   const lightsSunset = (lightsSunrise + lightsDuration) % 24;
-  const luxValue = getNumeric("number", "white_led_intensity", NaN);
+  const luxValue = getNumeric(entities, "number", "white_led_intensity", NaN);
   const currentColor = rgbToHex(
-    getNumeric("number", "red_led_intensity", 0),
-    getNumeric("number", "green_led_intensity", 0),
-    getNumeric("number", "blue_led_intensity", 0)
+    getNumeric(entities, "number", "red_led_intensity", 0),
+    getNumeric(entities, "number", "green_led_intensity", 0),
+    getNumeric(entities, "number", "blue_led_intensity", 0)
   );
   const lightsOn = (() => {
     const now = new Date();
@@ -774,24 +532,24 @@ export function Dashboard() {
   );
 
   const humidifierOn =
-    getBoolean("switch", "humidifier") ||
-    getBoolean("binary_sensor", "humidifier_on");
+    getBoolean(entities, "switch", "humidifier") ||
+    getBoolean(entities, "binary_sensor", "humidifier_on");
   const airExchangeOn =
-    getBoolean("switch", "air_exchange") ||
-    getBoolean("binary_sensor", "air_exchange_on");
-  const heatRequested = getBoolean("binary_sensor", "heat_requested");
-  const bleEnabled = getBoolean("switch", "ble_enabled");
+    getBoolean(entities, "switch", "air_exchange") ||
+    getBoolean(entities, "binary_sensor", "air_exchange_on");
+  const heatRequested = getBoolean(entities, "binary_sensor", "heat_requested");
+  const bleEnabled = getBoolean(entities, "switch", "ble_enabled");
   const timezoneGroups = buildTimezoneGroups(timezone);
   const timezoneShortLabel = (() => {
     const flat = timezoneGroups.flatMap((group) => group.options);
     const match = flat.find((option) => option.value === timezone);
     return match ? match.shortLabel : timezone;
   })();
-  const wifiMode = getText("wifi_mode") || "Unknown";
-  const wifiSSID = getText("wifi_ssid") || "Unknown";
-  const ipAddress = getText("ip_address") || "Unavailable";
-  const calibrationStatus = getText("calibration_status") || "";
-  const airExchangeStatusText = getText("air_exchange_status") || "";
+  const wifiMode = getText(entities, "wifi_mode") || "Unknown";
+  const wifiSSID = getText(entities, "wifi_ssid") || "Unknown";
+  const ipAddress = getText(entities, "ip_address") || "Unavailable";
+  const calibrationStatus = getText(entities, "calibration_status") || "";
+  const airExchangeStatusText = getText(entities, "air_exchange_status") || "";
   const ventGuardMinutes = getNumeric(
     "number",
     "temperature__vent_holdoff_minutes",
@@ -807,7 +565,7 @@ export function Dashboard() {
     "air_exchange__run_minutes",
     5
   );
-  const fanTargetRpm = getNumeric("number", "air_exchange__target_rpm", 1500);
+  const fanTargetRpm = getNumeric(entities, "number", "air_exchange__target_rpm", 1500);
   const airExchangeHoldoff = getNumeric(
     "number",
     "air_exchange__holdoff_minutes",
@@ -819,9 +577,9 @@ export function Dashboard() {
     2
   );
   const lightsMode = entities["select-lighting_mode"]?.state || "daylight";
-  const humidifierStatusText = getText("humidifier_fan_status") || "";
+  const humidifierStatusText = getText(entities, "humidifier_fan_status") || "";
   const licensesText =
-    getText("licenses") || "License list not yet reported by the device.";
+    getText(entities, "licenses") || "License list not yet reported by the device.";
   const voltageDisplay = Number.isFinite(systemVoltage)
     ? `${systemVoltage.toFixed(2)} V`
     : "--";
@@ -839,7 +597,7 @@ export function Dashboard() {
     : null;
 
   const alerts = ALERTS.filter((alert) =>
-    getBoolean("binary_sensor", `alert__${alert.id}`)
+    getBoolean(entities, "binary_sensor", `alert__${alert.id}`)
   );
 
   const toastMessages = [];
@@ -857,6 +615,100 @@ export function Dashboard() {
       message: banner.message,
     });
   }
+
+  const sensorCards = [
+    {
+      id: "temperature",
+      icon: "fluent-emoji-flat:thermometer",
+      label: "Temperature",
+      value: Number.isFinite(temperature)
+        ? `${temperature.toFixed(1)}°C`
+        : null,
+      detail: tempControlEnabled
+        ? `Comfort ${tempMin.toFixed(1)}°–${tempMax.toFixed(1)}°`
+        : "Guard disabled",
+      action: () => setModal("temperature"),
+    },
+    {
+      id: "humidity",
+      icon: "fluent-emoji-flat:water-wave",
+      label: "Humidity",
+      value: Number.isFinite(humidity) ? `${humidity.toFixed(1)}%` : null,
+      detail: `Target ${targetHumidity.toFixed(1)}% · ±${humidityHysteresis.toFixed(1)}%`,
+      action: () => setModal("humidity"),
+    },
+    {
+      id: "ambient-light",
+      icon: "fluent-emoji-flat:glowing-star",
+      label: "Ambient light",
+      value: Number.isFinite(luxValue) ? `${luxValue.toFixed(0)} lux` : null,
+      detail: `Sunrise ${formatTime(lightsSunrise)} · Sunset ${formatTime(lightsSunset)}`,
+      action: () => setModal("light"),
+    },
+    {
+      id: "reservoir",
+      icon: "fluent-emoji-flat:droplet",
+      label: "Reservoir",
+      value: Number.isFinite(waterLevel) ? `${waterLevel.toFixed(0)}%` : null,
+      detail: calibrationStatus || "Tap to calibrate",
+      action: () => setModal("water"),
+    },
+  ];
+
+  const controlCards = [
+    {
+      id: "humidifier",
+      icon: "fluent-emoji-flat:shower",
+      label: "Humidifier",
+      isActive: Boolean(humidifierOn),
+      isAvailable:
+        Boolean(entities["switch-humidifier"]) ||
+        Boolean(entities["binary_sensor-humidifier_on"]),
+      detail:
+        humidifierStatusText ||
+        (humidifierOn ? "Maintaining humidity band" : "Standby"),
+      action: () => setModal("humidity"),
+    },
+    {
+      id: "air-exchange",
+      icon: "fluent-emoji-flat:wind-face",
+      label: "Air exchange",
+      isActive: Boolean(airExchangeOn),
+      isAvailable:
+        Boolean(entities["switch-air_exchange"]) ||
+        Boolean(entities["binary_sensor-air_exchange_on"]),
+      detail:
+        airExchangeStatusText ||
+        (airExchangeOn
+          ? `Cycle ${airExchangeDuration.toFixed(0)} min / ${airExchangePeriod.toFixed(0)} min`
+          : "Idle"),
+      action: () => setModal("air"),
+    },
+    {
+      id: "heat-guard",
+      icon: "fluent-emoji-flat:fire",
+      label: "Heat assist",
+      isActive: Boolean(heatRequested || tempControlEnabled),
+      isAvailable:
+        Boolean(entities["switch-temperature_control_enabled"]) ||
+        Boolean(entities["binary_sensor-heat_requested"]),
+      detail: tempControlEnabled
+        ? `Guard ${tempMin.toFixed(1)}°–${tempMax.toFixed(1)}°`
+        : "Guard disabled",
+      action: () => setModal("temperature"),
+    },
+    {
+      id: "lighting",
+      icon: "fluent-emoji-flat:glowing-star",
+      label: "Lighting",
+      isActive: Boolean(lightsOn),
+      isAvailable:
+        Boolean(entities["select-lighting_mode"]) ||
+        Boolean(entities["number-white_led_intensity"]),
+      detail: `${lightsMode === "daylight" ? "Daylight" : "Custom"} scene`,
+      action: () => setModal("light"),
+    },
+  ];
 
   const [footerQuote, setFooterQuote] = useState(null);
 
@@ -962,204 +814,6 @@ export function Dashboard() {
       </div>
     `;
   }
-
-  const OverviewScreen = () => {
-    const humidifierEntity =
-      entities["switch-humidifier"] || entities["binary_sensor-humidifier_on"];
-    const airExchangeEntity =
-      entities["switch-air_exchange"] ||
-      entities["binary_sensor-air_exchange_on"];
-    const heatGuardEntity =
-      entities["switch-temperature_control_enabled"] ||
-      entities["binary_sensor-heat_requested"];
-    const lightingEntity =
-      entities["select-lighting_mode"] ||
-      entities["number-white_led_intensity"];
-    const offline = connection.status === "offline";
-    const noResponseText = () => {
-      const since = formatSinceShort(lastUpdate);
-      return since ? `No Response ${since}` : "No Response";
-    };
-
-    const sensors = [
-      {
-        id: "temperature",
-        icon: "fluent-emoji-flat:thermometer",
-        label: "Temperature",
-        value: Number.isFinite(temperature)
-          ? `${temperature.toFixed(1)}°C`
-          : null,
-        detail: tempControlEnabled
-          ? `Comfort ${tempMin.toFixed(1)}°–${tempMax.toFixed(1)}°`
-          : "Guard disabled",
-        action: () => setModal("temperature"),
-      },
-      {
-        id: "humidity",
-        icon: "fluent-emoji-flat:water-wave",
-        label: "Humidity",
-        value: Number.isFinite(humidity) ? `${humidity.toFixed(1)}%` : null,
-        detail: `Target ${targetHumidity.toFixed(
-          1
-        )}% · ±${humidityHysteresis.toFixed(1)}%`,
-        action: () => setModal("humidity"),
-      },
-      {
-        id: "ambient-light",
-        icon: "fluent-emoji-flat:glowing-star",
-        label: "Ambient light",
-        value: Number.isFinite(luxValue) ? `${luxValue.toFixed(0)} lux` : null,
-        detail: `Sunrise ${formatTime(lightsSunrise)} · Sunset ${formatTime(
-          lightsSunset
-        )}`,
-        action: () => setModal("light"),
-      },
-      {
-        id: "reservoir",
-        icon: "fluent-emoji-flat:droplet",
-        label: "Reservoir",
-        value: Number.isFinite(waterLevel) ? `${waterLevel.toFixed(0)}%` : null,
-        detail: calibrationStatus || "Tap to calibrate",
-        action: () => setModal("water"),
-      },
-    ];
-
-    const controls = [
-      {
-        id: "humidifier",
-        icon: "fluent-emoji-flat:shower",
-        label: "Humidifier",
-        isActive: Boolean(humidifierOn),
-        isAvailable: Boolean(humidifierEntity),
-        detail:
-          humidifierStatusText ||
-          (humidifierOn ? "Maintaining humidity band" : "Standby"),
-        action: () => setModal("humidity"),
-      },
-      {
-        id: "air-exchange",
-        icon: "fluent-emoji-flat:wind-face",
-        label: "Air exchange",
-        isActive: Boolean(airExchangeOn),
-        isAvailable: Boolean(airExchangeEntity),
-        detail:
-          airExchangeStatusText ||
-          (airExchangeOn
-            ? `Cycle ${airExchangeDuration.toFixed(
-                0
-              )} min / ${airExchangePeriod.toFixed(0)} min`
-            : "Idle"),
-        action: () => setModal("air"),
-      },
-      {
-        id: "heat-guard",
-        icon: "fluent-emoji-flat:fire",
-        label: "Heat assist",
-        isActive: Boolean(heatRequested || tempControlEnabled),
-        isAvailable: Boolean(heatGuardEntity),
-        detail: tempControlEnabled
-          ? `Guard ${tempMin.toFixed(1)}°–${tempMax.toFixed(1)}°`
-          : "Guard disabled",
-        action: () => setModal("temperature"),
-      },
-      {
-        id: "lighting",
-        icon: "fluent-emoji-flat:glowing-star",
-        label: "Lighting",
-        isActive: Boolean(lightsOn),
-        isAvailable: Boolean(lightingEntity),
-        detail: `${lightsMode === "daylight" ? "Daylight" : "Custom"} scene`,
-        action: () => setModal("light"),
-      },
-    ];
-
-    return html`
-      <section className="section" aria-labelledby="section-overview">
-        <div className="section-header">
-          <div>
-            <h2 id="section-overview">Environment</h2>
-          </div>
-        </div>
-        <div className="sensor-strip">
-          ${sensors.map((sensor) => {
-            const hasValue = !offline && sensor.value !== null;
-            const detail = hasValue ? sensor.detail : null;
-            const displayValue = hasValue ? sensor.value : noResponseText();
-            const tone = hasValue ? "sensor-active" : "sensor-inactive";
-            return html`<button
-              type="button"
-              className=${`sensor-item ${tone}`}
-              onClick=${sensor.action}
-              disabled=${controlsDisabled && !hasValue}
-            >
-              <span className="sensor-icon">
-                <iconify-icon
-                  icon=${sensor.icon}
-                  width="18"
-                  height="18"
-                ></iconify-icon>
-              </span>
-              <span className="sensor-copy">
-                <span className="sensor-label">${sensor.label}</span>
-                <span
-                  className="sensor-value"
-                  data-state=${hasValue ? "available" : "unavailable"}
-                >
-                  ${displayValue}
-                </span>
-                ${detail
-                  ? html`<span className="sensor-detail">${detail}</span>`
-                  : null}
-              </span>
-            </button>`;
-          })}
-        </div>
-
-        <div className="control-strip">
-          ${controls.map((control) => {
-            const hasEntity = control.isAvailable;
-            const hasRecentData = hasEntity && Boolean(lastUpdate);
-            const noResponse = offline || !hasRecentData;
-            const active = control.isActive && !noResponse;
-            const dimmed = !control.isActive || noResponse;
-            const classes = ["control-pill"];
-            if (active) classes.push("active");
-            if (dimmed) classes.push("dimmed");
-            return html`<button
-              type="button"
-              className=${classes.join(" ")}
-              onClick=${control.action}
-              data-state=${control.isActive ? "on" : "off"}
-            >
-              <span className="pill-icon">
-                <iconify-icon
-                  icon=${control.icon}
-                  width="20"
-                  height="20"
-                ></iconify-icon>
-              </span>
-              <span className="pill-copy">
-                <span className="pill-label">${control.label}</span>
-                <span className="pill-detail">
-                  ${noResponse ? noResponseText() : control.detail}
-                </span>
-              </span>
-            </button>`;
-          })}
-        </div>
-        ${footerQuote
-          ? html`<div className="quote-footer" role="note">
-              <p className="quote-footer__text">“${footerQuote.text}”</p>
-              ${footerQuote.author
-                ? html`<p className="quote-footer__author">
-                    — ${footerQuote.author}
-                  </p>`
-                : null}
-            </div>`
-          : null}
-      </section>
-    `;
-  };
 
   const renderModal = () => {
     if (!modal) return null;
@@ -1557,7 +1211,7 @@ export function Dashboard() {
       water: {
         title: "Water Reservoir Calibration",
         body: () => {
-          const calibrated = getBoolean("binary_sensor", "water_calibrated");
+          const calibrated = getBoolean(entities, "binary_sensor", "water_calibrated");
           return html`
             ${viewOnlyNotice}
             <p>
@@ -1962,7 +1616,14 @@ export function Dashboard() {
       </header>
 
       <div className="screen-body">
-        <${OverviewScreen} />
+        <${OverviewSection}
+          sensors=${sensorCards}
+          controls=${controlCards}
+          offline=${connection.status === "offline"}
+          controlsDisabled=${controlsDisabled}
+          lastUpdate=${lastUpdate}
+          quote=${footerQuote}
+        />
       </div>
 
       ${toastMessages.length
