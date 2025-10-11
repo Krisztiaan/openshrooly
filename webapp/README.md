@@ -6,11 +6,15 @@ This directory hosts the build-less dashboard served directly from the ESPHome w
 
 Open `index.html` in a modern browser via a local web server, or point it to a live device. No bundler is required—just edit the files and reload. The dashboard registers a service worker and PWA manifest, so running it from `http://localhost` mirrors the offline behaviour baked into the firmware.
 
+### Mock firmware API
+
+For local development without a device you can launch the Node mock server, which serves the dashboard and happy-path ESPHome endpoints:
+
 ```
-python3 -m http.server -d webapp
+node scripts/mock-server.js
 ```
 
-The dashboard expects ESPHome's native REST endpoints (e.g. `/sensor/*`, `/switch/*`) and `EventSource` at `/events`.
+This starts http://localhost:4000, proxies static files from `webapp/`, and implements `/json`, `/sensor/*`, `/number/*`, `/switch/*`, `/select/*`, and `/events` with in-memory state.
 
 ## Updating vendor modules
 
@@ -24,13 +28,4 @@ Refresh them manually with `curl` if upstream releases are needed.
 
 ## Embedding into firmware
 
-Run the existing embed script from the repository root:
-
-```
-python3 esphome/external_components/web_server/embed_static_files.py \
-  webapp \
-  esphome/external_components/web_server/static_files.h \
-  esphome/external_components/web_server/static_files.cpp
-```
-
-Because filenames stay stable, the generated C++ output should now be deterministic across environments.
+The PlatformIO build step runs `embed_static_files.py` automatically via `extra_scripts` in `esphome/openshrooly.yaml`, so compiling firmware always regenerates the embedded headers. You can still run the script manually if you want to diff the output without compiling.
