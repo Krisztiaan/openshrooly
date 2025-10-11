@@ -16,6 +16,12 @@ node scripts/mock-server.js
 
 This starts http://localhost:4000, proxies static files from `webapp/`, and implements `/json`, `/sensor/*`, `/number/*`, `/switch/*`, `/select/*`, and `/events` with in-memory state.
 
+To auto-restart the mock server whenever dashboard files change, you can use `npx nodemon` (no global install needed):
+
+```
+npx nodemon --watch webapp --ext js,mjs,css,html,json --exec "node scripts/mock-server.js"
+```
+
 ## Updating vendor modules
 
 `./vendor/` contains pinned copies of:
