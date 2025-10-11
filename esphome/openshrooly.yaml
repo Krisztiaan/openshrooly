@@ -11,6 +11,8 @@ esphome:
   platformio_options:
     build_flags:
       - -Wno-cpp  # Suppress preprocessor warnings (including deprecation warnings)
+    extra_scripts:
+      - pre:../../../platformio_scripts/embed_webapp.py
 
   on_boot:
     priority: 600  # Very early boot

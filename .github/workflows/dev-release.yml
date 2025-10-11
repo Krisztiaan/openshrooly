@@ -2,15 +2,10 @@ name: Build development firmware
 
 on:
   push:
-<<<<<<< HEAD
     branches:
       - main
     tags-ignore:
       - 'dev-*'
-=======
-    branches: ["**"] # any branch
-    tags: ["*"] # any tag (creation or moved)
->>>>>>> c49eb35 (Refine dashboard UX and settings modal)
   workflow_dispatch:
     inputs:
       publish_dev_outputs:
@@ -97,36 +92,24 @@ jobs:
 
       - name: Stamp service worker cache version
         run: |
-          sed -i "s/__CACHE_VERSION__/openshrooly-dashboard-${GITHUB_SHA::7}/" webapp/service-worker.js
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Determine build ID
-        id: build_id
-        run: |
-          SHA="${{ github.sha }}"
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            SHA="${{ github.event.pull_request.head.sha }}"
+          CACHE_VERSION="openshrooly-dashboard-${GITHUB_SHA::7}"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            CLEAN_TAG=$(echo "${GITHUB_REF_NAME}" | tr -c 'A-Za-z0-9._-' '-')
+            CACHE_VERSION="openshrooly-dashboard-${CLEAN_TAG}-${GITHUB_SHA::7}"
           fi
-          BUILD_ID="${SHA:0:12}"
-          echo "Using build id: ${BUILD_ID}"
-          echo "build_id=${BUILD_ID}" >> "$GITHUB_OUTPUT"
+          echo "Using service worker cache version: ${CACHE_VERSION}"
+          python3 - "$CACHE_VERSION" <<'PY'
+import sys
+from pathlib import Path
 
-      - name: Build webapp
-        env:
-          NEXT_BUILD_ID: ${{ steps.build_id.outputs.build_id }}
-        run: |
-          cd webapp
-          npm ci
-          npm run build
-
-      - name: Embed static files
-        run: |
-          cd esphome
-          python3 external_components/web_server/embed_static_files.py ../webapp/out external_components/web_server/static_files.h external_components/web_server/static_files.cpp
+cache_version = sys.argv[1]
+sw_path = Path("webapp/service-worker.js")
+text = sw_path.read_text()
+placeholder = "__CACHE_VERSION_STAMPED__"
+if placeholder not in text:
+    raise SystemExit("Placeholder missing in service-worker.js")
+sw_path.write_text(text.replace(placeholder, cache_version, 1))
+PY
 
       - name: Build firmware (once)
         id: build

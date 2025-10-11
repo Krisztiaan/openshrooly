@@ -1,8 +1,7 @@
-const CACHE_PLACEHOLDER = '__CACHE_VERSION__'
-const STAMPED_CACHE_VERSION = CACHE_PLACEHOLDER
+const STAMPED_CACHE_VERSION = '__CACHE_VERSION_STAMPED__'
 const DEV_HOSTNAMES = ['localhost', '127.0.0.1', '']
 const DEV_MODE =
-  STAMPED_CACHE_VERSION === CACHE_PLACEHOLDER ||
+  STAMPED_CACHE_VERSION === '__CACHE_VERSION_STAMPED__' ||
   DEV_HOSTNAMES.includes(self.location.hostname || '')
 const CACHE_NAME = DEV_MODE
   ? 'openshrooly-dashboard-dev'

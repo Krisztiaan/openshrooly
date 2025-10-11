@@ -58,6 +58,8 @@ extern const uint8_t STATIC_FILE_20_DATA[];
 extern const size_t STATIC_FILE_20_SIZE;
 extern const uint8_t STATIC_FILE_21_DATA[];
 extern const size_t STATIC_FILE_21_SIZE;
+extern const uint8_t STATIC_FILE_22_DATA[];
+extern const size_t STATIC_FILE_22_SIZE;
 
 extern const StaticFile STATIC_FILES[];
 extern const size_t STATIC_FILES_COUNT;

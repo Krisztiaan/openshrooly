@@ -15,7 +15,7 @@ This is a modified version of ESPHome's built-in `web_server` component that add
 Unlike the standard LittleFS approach, this component embeds static dashboard files while compiling the firmware:
 
 1. Prepare or update the web assets under `webapp/` (the current dashboard uses native Preact + HTM modules).
-2. Run `embed_static_files.py` to gzip the assets and regenerate `static_files.h/.cpp`.
+2. Trigger the PlatformIO pre-build hook (or run `embed_static_files.py` manually if you need to regenerate the files out-of-band). The ESPHome compile step now runs the script automatically.
 3. Point `app_html_include` at the dashboard HTML (`webapp/index.html`) so the base page is bundled.
 4. Build the firmware — the assets are linked into flash and served straight from PROGMEM.
 
@@ -36,26 +36,14 @@ web_server:
 
 Edit the files in `webapp/` (`index.html`, `app.js`, `styles/app.css`, `components/`, `vendor/`, etc.). The dashboard now ships as native ES modules, so you can develop by opening `index.html` with any static file server—no bundler step is required.
 
-### 2. Embed the static files
-
-From the repository root run:
-
-```bash
-python3 esphome/external_components/web_server/embed_static_files.py \
-  webapp \
-  esphome/external_components/web_server/static_files.h \
-  esphome/external_components/web_server/static_files.cpp \
-  app
-```
-
-The optional fourth argument controls the URL prefix; using `app` keeps all assets available under `/app/*`, matching the paths referenced in `index.html`.
-
-### 3. Compile and upload
+### 2. Compile and upload (auto-embeds dashboard assets)
 
 ```bash
 source ~/dev/esphome/.venv/bin/activate
 esphome run openshrooly.yaml
 ```
+
+> **Tip:** The pre-build hook calls `embed_static_files.py` every time you compile. If you need to regenerate the headers without compiling, you can still invoke the script manually using the command above.
 
 ## Why Not LittleFS?
 
