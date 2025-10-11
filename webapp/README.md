@@ -22,6 +22,12 @@ To auto-restart the mock server whenever dashboard files change, you can use `np
 npx nodemon --watch webapp --ext js,mjs,css,html,json --exec "node scripts/mock-server.js"
 ```
 
+If you already have `watchexec` installed, a similar command is:
+
+```
+watchexec --clear --restart --watch webapp --exts js,mjs,css,html,json -- node scripts/mock-server.js
+```
+
 ## Updating vendor modules
 
 `./vendor/` contains pinned copies of:
