@@ -9,6 +9,7 @@ import { SettingsRow } from "./settings-row.js";
 import { ModalSheet } from "./modal-sheet.js";
 import { ToggleSwitch } from "./toggle-switch.js";
 import { OverviewSection } from "./overview-section.js";
+import { DeviceSettingsSheet } from "./device-settings-sheet.js";
 import { getNumeric, getBoolean, getText } from "../lib/entities.js";
 
 const html = htm.bind(h);
@@ -19,68 +20,6 @@ const ALERTS = [
   { id: "fan_start_failure", msg: "Air exchange fan failed to start" },
   { id: "temperature_too_low", msg: "Temperature is below the safe range" },
   { id: "temperature_too_high", msg: "Temperature is above the safe range" },
-];
-
-const FALLBACK_TIMEZONES = [
-  "America/Los_Angeles",
-  "America/Denver",
-  "America/Phoenix",
-  "America/Chicago",
-  "America/New_York",
-  "America/Toronto",
-  "America/Mexico_City",
-  "America/Sao_Paulo",
-  "America/Argentina/Buenos_Aires",
-  "America/Bogota",
-  "America/Lima",
-  "America/Caracas",
-  "Europe/London",
-  "Europe/Dublin",
-  "Europe/Lisbon",
-  "Europe/Paris",
-  "Europe/Berlin",
-  "Europe/Amsterdam",
-  "Europe/Brussels",
-  "Europe/Rome",
-  "Europe/Madrid",
-  "Europe/Warsaw",
-  "Europe/Stockholm",
-  "Europe/Oslo",
-  "Europe/Athens",
-  "Europe/Helsinki",
-  "Europe/Istanbul",
-  "Europe/Kiev",
-  "Europe/Moscow",
-  "Africa/Cairo",
-  "Africa/Johannesburg",
-  "Africa/Lagos",
-  "Africa/Nairobi",
-  "Asia/Jerusalem",
-  "Asia/Dubai",
-  "Asia/Riyadh",
-  "Asia/Tehran",
-  "Asia/Karachi",
-  "Asia/Kolkata",
-  "Asia/Dhaka",
-  "Asia/Bangkok",
-  "Asia/Jakarta",
-  "Asia/Singapore",
-  "Asia/Kuala_Lumpur",
-  "Asia/Manila",
-  "Asia/Hong_Kong",
-  "Asia/Shanghai",
-  "Asia/Taipei",
-  "Asia/Seoul",
-  "Asia/Tokyo",
-  "Australia/Perth",
-  "Australia/Adelaide",
-  "Australia/Darwin",
-  "Australia/Brisbane",
-  "Australia/Sydney",
-  "Australia/Melbourne",
-  "Pacific/Auckland",
-  "Pacific/Fiji",
-  "Pacific/Honolulu",
 ];
 
 const SYSTEM_TIME_ZONE = getSystemTimezone();
@@ -712,6 +651,10 @@ export function Dashboard() {
 
   const [footerQuote, setFooterQuote] = useState(null);
 
+  const fanSpeedDisplay = Number.isFinite(fanRpm)
+    ? `${fanRpm.toFixed(0)} RPM`
+    : "—";
+
   useEffect(() => {
     let isMounted = true;
     fetch("./quotes.json")
@@ -814,6 +757,25 @@ export function Dashboard() {
       </div>
     `;
   }
+
+  const handleOpenFirmwareSettings = () => {
+    if (blockControlsIfUnavailable("Cannot manage firmware while offline."))
+      return;
+    setModal("settings");
+  };
+
+  const handleCalibrateFromSettings = () => {
+    if (blockControlsIfUnavailable()) return;
+    setModal("water");
+  };
+
+  const handleManageTrustedDevices = () => {
+    setModal("settings");
+  };
+
+  const handleToggleBle = (value) => {
+    handleSwitchChange("ble_enabled", value);
+  };
 
   const renderModal = () => {
     if (!modal) return null;
@@ -1381,194 +1343,6 @@ export function Dashboard() {
   `;
   };
 
-  const SettingsSheet = () => {
-    const settingsOpen = settingsSheetOpen;
-
-    const openTimezonePicker = (event) => {
-      if (controlsDisabled) return;
-      const selectEl = event.currentTarget.querySelector(
-        "select.settings-select-native"
-      );
-      if (!selectEl) return;
-      if (typeof selectEl.showPicker === "function") {
-        selectEl.showPicker();
-        return;
-      }
-      selectEl.focus({ preventScroll: true });
-      const clickEvent = new MouseEvent("click", {
-        view: window,
-        bubbles: true,
-        cancelable: true,
-      });
-      selectEl.dispatchEvent(clickEvent);
-    };
-
-    const handleFirmwareUpdate = () => {
-      if (blockControlsIfUnavailable("Cannot manage firmware while offline."))
-        return;
-      setModal("settings");
-    };
-
-    const handleTrustedDevices = () => {
-      setModal("settings");
-    };
-
-    const fanSpeedDisplay = Number.isFinite(fanRpm)
-      ? `${fanRpm.toFixed(0)} RPM`
-      : "—";
-
-    return html`
-    <${ModalSheet}
-      open=${settingsOpen}
-      title="Settings"
-      onClose=${() => setSettingsSheetOpen(false)}
-    >
-      ${controlsDisabled ? viewOnlyNotice : null}
-      <section className="settings-group" aria-labelledby="settings-group-system">
-        <header className="settings-group__header">
-          <h2 id="settings-group-system" className="settings-group__title">
-            System
-          </h2>
-          <p className="settings-group__detail">Core configuration</p>
-        </header>
-        <div className="settings-card">
-          <${SettingsRow}
-            icon="fluent-emoji-flat:toolbox"
-            title="Device"
-            hint="Fixed hardware target"
-            value="OpenShrooly"
-          />
-          <${SettingsRow}
-            icon="fluent-emoji-flat:globe-with-meridians"
-            title="Timezone"
-            hint="Align schedules to your locale"
-            className="settings-row--select"
-            interactive=${true}
-            disabled=${controlsDisabled}
-            onPress=${openTimezonePicker}
-          >
-            <span className="settings-row-value">${timezoneShortLabel}</span>
-            <select
-              className="settings-select-native"
-              value=${timezone}
-              disabled=${controlsDisabled}
-              aria-label="Select timezone"
-              onChange=${(event) => handleTimezoneChange(event.target.value)}
-            >
-              ${timezoneGroups.map(
-                (group) => html`<optgroup label=${group.label}>
-                  ${group.options.map(
-                    (option) =>
-                      html`<option value=${option.value}>
-                        ${option.label}
-                      </option>`
-                  )}
-                </optgroup>`
-              )}
-            </select>
-          </${SettingsRow}>
-          <${SettingsRow}
-            icon="fluent-emoji-flat:calendar"
-            title="Last snapshot"
-            value=${lastUpdateDisplay}
-          />
-          <${SettingsRow}
-            icon="fluent-emoji-flat:battery"
-            title="Input voltage"
-            value=${voltageDisplay}
-          />
-        </div>
-      </section>
-
-      <section className="settings-group" aria-labelledby="settings-group-network">
-        <header className="settings-group__header">
-          <h2 id="settings-group-network" className="settings-group__title">
-            Network
-          </h2>
-          <p className="settings-group__detail">Connection details</p>
-        </header>
-        <div className="settings-card">
-          <${SettingsRow}
-            icon="fluent-emoji-flat:antenna-bars"
-            title="Wi‑Fi"
-            hint=${wifiMode}
-            value=${wifiSSID}
-          />
-          <${SettingsRow}
-            icon="fluent-emoji-flat:desktop-computer"
-            title="IP address"
-            value=${ipAddress}
-          />
-          <${SettingsRow}
-            icon="fluent-emoji-flat:leaf-fluttering-in-wind"
-            title="Fan speed"
-            value=${fanSpeedDisplay}
-          />
-          <${SettingsRow}
-            icon="fluent-emoji-flat:globe-showing-europe-africa"
-            title="Remote connection"
-            hint="Bridge data via relay"
-            value="Coming soon"
-          />
-        </div>
-      </section>
-
-      <section className="settings-group" aria-labelledby="settings-group-maintenance">
-        <header className="settings-group__header">
-          <h2 id="settings-group-maintenance" className="settings-group__title">
-            Maintenance
-          </h2>
-          <p className="settings-group__detail">Keep things healthy</p>
-        </header>
-        <div className="settings-card">
-          <${SettingsRow}
-            icon="fluent-emoji-flat:gear"
-            title="Firmware update"
-            hint="Upload ESPHome binary"
-            interactive=${true}
-            disabled=${controlsDisabled}
-            onPress=${handleFirmwareUpdate}
-          >
-            <span className="settings-row-value action">Open</span>
-          </${SettingsRow}>
-          <${SettingsRow}
-            icon="fluent-emoji-flat:satellite-antenna"
-            title="BLE service"
-            hint="Expose sensors and controls over BLE"
-          >
-            <${ToggleSwitch}
-              checked=${bleEnabled}
-              disabled=${controlsDisabled}
-              ariaLabel="Toggle BLE service"
-              onChange=${(value) => handleSwitchChange("ble_enabled", value)}
-            />
-          </${SettingsRow}>
-          <${SettingsRow}
-            icon="fluent-emoji-flat:test-tube"
-            title="Calibrate reservoir"
-            hint="Request a fresh dry-tank calibration"
-            interactive=${true}
-            disabled=${controlsDisabled}
-            onPress=${() => setModal("water")}
-          >
-            <span className="settings-row-value action">Start</span>
-          </${SettingsRow}>
-          <${SettingsRow}
-            icon="fluent-emoji-flat:handshake"
-            title="Trusted BLE devices"
-            hint="Pair or forget clients"
-            interactive=${true}
-            disabled=${controlsDisabled}
-            onPress=${handleTrustedDevices}
-          >
-            <span className="settings-row-value action">Manage</span>
-          </${SettingsRow}>
-        </div>
-      </section>
-    </${ModalSheet}>
-  `;
-  };
-
   return html`
     <div className="app-shell">
       <header className="app-header">
@@ -1636,7 +1410,29 @@ export function Dashboard() {
             )}
           </div>`
         : null}
-      <${SettingsSheet} />
+      <${DeviceSettingsSheet}
+        open=${settingsSheetOpen}
+        onClose=${() => setSettingsSheetOpen(false)}
+        controlsDisabled=${controlsDisabled}
+        viewOnlyNotice=${viewOnlyNotice}
+        timezoneShortLabel=${timezoneShortLabel}
+        timezoneGroups=${timezoneGroups}
+        timezone=${timezone}
+        onTimezoneChange=${handleTimezoneChange}
+        lastSnapshot=${lastUpdateDisplay}
+        voltageDisplay=${voltageDisplay}
+        fanSpeedDisplay=${fanSpeedDisplay}
+        wifiMode=${wifiMode}
+        wifiSSID=${wifiSSID}
+        ipAddress=${ipAddress}
+        bleEnabled=${bleEnabled}
+        onToggleBle=${handleToggleBle}
+        onOpenFirmware=${handleOpenFirmwareSettings}
+        onCalibrate=${handleCalibrateFromSettings}
+        onManageTrusted=${handleManageTrustedDevices}
+        calibrationStatus=${calibrationStatus}
+        calibrationSuccess=${calibrationSuccess}
+      />
       ${renderModal()}
     </div>
   `;
