@@ -5,10 +5,16 @@ import { api } from "../lib/esphome-api.js";
 import { loadPreferences, savePreferences, getSystemTimezone } from "../lib/preferences.js";
 import { buildTimezoneGroups } from "../lib/timezones.js";
 import { formatTime, formatSinceShort, rgbToHex, hexToRgb } from "../lib/format.js";
-import { SettingsRow } from "./settings-row.js";
-import { ModalSheet } from "./modal-sheet.js";
-import { ToggleSwitch } from "./toggle-switch.js";
 import { OverviewSection } from "./overview-section.js";
+import {
+  HumidityModal,
+  TemperatureModal,
+  AirModal,
+  LightModal,
+  WaterModal,
+  AdvancedSettingsModal,
+} from "./modals/index.js";
+import { ToggleSwitch } from "./toggle-switch.js";
 import { DeviceSettingsSheet } from "./device-settings-sheet.js";
 import { getNumeric, getBoolean, getText } from "../lib/entities.js";
 
@@ -654,6 +660,39 @@ export function Dashboard() {
   const fanSpeedDisplay = Number.isFinite(fanRpm)
     ? `${fanRpm.toFixed(0)} RPM`
     : "—";
+  const reservoirCalibrated = getBoolean(entities, "binary_sensor", "water_calibrated");
+
+  const handleLightColorChange = (hex) => {
+    const rgb = hexToRgb(hex);
+    handleNumberChange("red_led_intensity", rgb.r);
+    handleNumberChange("green_led_intensity", rgb.g);
+    handleNumberChange("blue_led_intensity", rgb.b);
+  };
+
+  const toggleLicenseView = () => setShowLicense((prev) => !prev);
+
+  const selectFirmwareFile = (file) => {
+    setOtaFile(file);
+    setOtaStatus("idle");
+    setOtaMessage("");
+  };
+
+  const resetFirmwareQueue = () => {
+    setOtaFile(null);
+    setOtaStatus("idle");
+    setOtaProgress(0);
+    setOtaMessage("");
+  };
+
+  const handleWaterCalibration = () => {
+    if (blockControlsIfUnavailable("Cannot calibrate while offline.")) return;
+    handleButtonClick("calibrate_dry_tank");
+    setTimeout(() => {
+      handleButtonClick("calibrate_dry_tank");
+      setCalibrationSuccess(true);
+      setTimeout(() => setCalibrationSuccess(false), 8000);
+    }, 500);
+  };
 
   useEffect(() => {
     let isMounted = true;
@@ -788,547 +827,105 @@ export function Dashboard() {
     const modalViews = {
       humidity: {
         title: "Humidity Control",
-        body: () => {
-          const presets = [
-            { label: "Precision · 70% ±1%", target: 70, hysteresis: 1 },
-            { label: "Balanced · 68% ±2%", target: 68, hysteresis: 2 },
-            { label: "Eco · 65% ±3%", target: 65, hysteresis: 3 },
-          ];
-          return html`
-            ${viewOnlyNotice}
-            <div className="input-group">
-              <label for="targetHumidity">Target humidity (%)</label>
-              <input
-                id="targetHumidity"
-                type="number"
-                min="60"
-                max="95"
-                step="0.5"
-                value=${targetHumidity}
-                disabled=${controlsDisabled}
-                onInput=${(event) =>
-                  handleNumberChange("target_humidity", event.target.value)}
-              />
-            </div>
-            <div className="input-group">
-              <label for="humidityHysteresis">Hysteresis (± %)</label>
-              <input
-                id="humidityHysteresis"
-                type="number"
-                min="0"
-                max="5"
-                step="0.25"
-                value=${humidityHysteresis}
-                disabled=${controlsDisabled}
-                onInput=${(event) =>
-                  handleNumberChange(
-                    "humidity__hysteresis",
-                    event.target.value
-                  )}
-              />
-            </div>
-            <div className="input-group">
-              <label>Presets</label>
-              <div className="chip-row">
-                ${presets.map(
-                  (preset) => html`
-                    <button
-                      className="chip-button"
-                      disabled=${controlsDisabled}
-                      onClick=${() => {
-                        handleNumberChange("target_humidity", preset.target);
-                        handleNumberChange(
-                          "humidity__hysteresis",
-                          preset.hysteresis
-                        );
-                        closeModal();
-                      }}
-                    >
-                      ${preset.label}
-                    </button>
-                  `
-                )}
-              </div>
-            </div>
-            <div className="input-group">
-              <label for="humidifierSpeed"
-                >Humidifier fan speed · ${humidifierSpeed.toFixed(0)}%</label
-              >
-              <input
-                id="humidifierSpeed"
-                type="range"
-                min="40"
-                max="100"
-                step="5"
-                value=${humidifierSpeed}
-                disabled=${controlsDisabled}
-                onInput=${(event) =>
-                  handleNumberChange("humidifier__speed", event.target.value)}
-              />
-              <p className="field-hint">
-                Higher speeds add humidity faster but increase noise and water
-                consumption.
-              </p>
-            </div>
-          `;
-        },
+        body: () =>
+          html`<${HumidityModal}
+            viewOnlyNotice=${viewOnlyNotice}
+            controlsDisabled=${controlsDisabled}
+            targetHumidity=${targetHumidity}
+            humidityHysteresis=${humidityHysteresis}
+            humidifierSpeed=${humidifierSpeed}
+            onChangeNumber=${handleNumberChange}
+            onApplyPreset=${(preset) => {
+              handleNumberChange("target_humidity", preset.target);
+              handleNumberChange("humidity__hysteresis", preset.hysteresis);
+              closeModal();
+            }}
+          />`,
       },
       temperature: {
         title: "Temperature Guard",
-        body: () => html`
-          ${viewOnlyNotice}
-          <div className="toggle-row">
-            <${ToggleSwitch}
-              checked=${tempControlEnabled}
-              disabled=${controlsDisabled}
-              ariaLabel="Toggle temperature guard"
-              onChange=${(value) =>
-                handleSwitchChange("temperature_control_enabled", value)}
-            />
-            <span className="toggle-row-copy">
-              Maintain ${tempTarget.toFixed(1)}°C ±
-              ${tempHysteresis.toFixed(1)}°C
-            </span>
-          </div>
-          <div className="input-grid">
-            <div className="input-group">
-              <label for="tempTarget">Target (°C)</label>
-              <input
-                id="tempTarget"
-                type="number"
-                min="10"
-                max="35"
-                step="0.5"
-                value=${tempTarget}
-                disabled=${controlsDisabled}
-                onInput=${(event) =>
-                  handleNumberChange("temperature__target", event.target.value)}
-              />
-            </div>
-            <div className="input-group">
-              <label for="tempHysteresis">Hysteresis (°C)</label>
-              <input
-                id="tempHysteresis"
-                type="number"
-                min="0.5"
-                max="5"
-                step="0.5"
-                value=${tempHysteresis}
-                disabled=${controlsDisabled}
-                onInput=${(event) =>
-                  handleNumberChange(
-                    "temperature__hysteresis",
-                    event.target.value
-                  )}
-              />
-            </div>
-            <div className="input-group">
-              <label for="tempWarningMin">Warning minimum (°C)</label>
-              <input
-                id="tempWarningMin"
-                type="number"
-                min="5"
-                max="25"
-                step="0.5"
-                value=${tempWarningMin}
-                disabled=${controlsDisabled}
-                onInput=${(event) =>
-                  handleNumberChange(
-                    "temperature__warning_minimum",
-                    event.target.value
-                  )}
-              />
-            </div>
-            <div className="input-group">
-              <label for="tempWarningMax">Warning maximum (°C)</label>
-              <input
-                id="tempWarningMax"
-                type="number"
-                min="15"
-                max="40"
-                step="0.5"
-                value=${tempWarningMax}
-                disabled=${controlsDisabled}
-                onInput=${(event) =>
-                  handleNumberChange(
-                    "temperature__warning_maximum",
-                    event.target.value
-                  )}
-              />
-            </div>
-          </div>
-          <div className="input-group">
-            <label for="tempVentHold">Fan hold-off (minutes)</label>
-            <input
-              id="tempVentHold"
-              type="number"
-              min="1"
-              max="15"
-              step="1"
-              value=${ventGuardMinutes}
-              disabled=${controlsDisabled}
-              onInput=${(event) =>
-                handleNumberChange(
-                  "temperature__vent_holdoff_minutes",
-                  event.target.value
-                )}
-            />
-            <p className="field-hint">
-              Prevents cold drafts from affecting readings immediately after
-              venting.
-            </p>
-          </div>
-        `,
+        body: () =>
+          html`<${TemperatureModal}
+            viewOnlyNotice=${viewOnlyNotice}
+            controlsDisabled=${controlsDisabled}
+            tempControlEnabled=${tempControlEnabled}
+            tempTarget=${tempTarget}
+            tempHysteresis=${tempHysteresis}
+            tempWarningMin=${tempWarningMin}
+            tempWarningMax=${tempWarningMax}
+            ventHoldMinutes=${ventGuardMinutes}
+            onToggleControl=${(value) =>
+              handleSwitchChange("temperature_control_enabled", value)}
+            onChangeNumber=${handleNumberChange}
+          />`,
       },
       air: {
         title: "Air Exchange Routine",
-        body: () => html`
-          ${viewOnlyNotice}
-          <div className="input-group">
-            <label for="airExchangePeriod">Cycle every (minutes)</label>
-            <input
-              id="airExchangePeriod"
-              type="number"
-              min="10"
-              max="240"
-              step="5"
-              value=${airExchangePeriod}
-              disabled=${controlsDisabled}
-              onInput=${(event) =>
-                handleNumberChange(
-                  "air_exchange__cycle_minutes",
-                  event.target.value
-                )}
-            />
-          </div>
-          <div className="input-group">
-            <label for="airExchangeDuration">Run duration (minutes)</label>
-            <input
-              id="airExchangeDuration"
-              type="number"
-              min="1"
-              max="60"
-              step="1"
-              value=${airExchangeDuration}
-              disabled=${controlsDisabled}
-              onInput=${(event) =>
-                handleNumberChange(
-                  "air_exchange__run_minutes",
-                  event.target.value
-                )}
-            />
-          </div>
-          <div className="input-group">
-            <label for="fanSpeed">Fan RPM target</label>
-            <input
-              id="fanSpeed"
-              type="number"
-              min="800"
-              max="3000"
-              step="50"
-              value=${fanTargetRpm}
-              disabled=${controlsDisabled}
-              onInput=${(event) =>
-                handleNumberChange(
-                  "air_exchange__target_rpm",
-                  event.target.value
-                )}
-            />
-          </div>
-          <div className="input-group">
-            <label for="airHoldoff">Pause after humidifying (minutes)</label>
-            <input
-              id="airHoldoff"
-              type="number"
-              min="0"
-              max="60"
-              step="1"
-              value=${airExchangeHoldoff}
-              disabled=${controlsDisabled}
-              onInput=${(event) =>
-                handleNumberChange(
-                  "air_exchange__holdoff_minutes",
-                  event.target.value
-                )}
-            />
-            <p className="field-hint">
-              Prevents the fan from fighting humidity recovery right after a
-              misting cycle.
-            </p>
-          </div>
-          <div className="input-group">
-            <label for="airBoost">Boost when humidity > target (%)</label>
-            <input
-              id="airBoost"
-              type="number"
-              min="0"
-              max="10"
-              step="0.5"
-              value=${airExchangeBoost}
-              disabled=${controlsDisabled}
-              onInput=${(event) =>
-                handleNumberChange(
-                  "air_exchange__boost_threshold",
-                  event.target.value
-                )}
-            />
-          </div>
-        `,
+        body: () =>
+          html`<${AirModal}
+            viewOnlyNotice=${viewOnlyNotice}
+            controlsDisabled=${controlsDisabled}
+            airExchangePeriod=${airExchangePeriod}
+            airExchangeDuration=${airExchangeDuration}
+            fanTargetRpm=${fanTargetRpm}
+            airExchangeHoldoff=${airExchangeHoldoff}
+            airExchangeBoost=${airExchangeBoost}
+            onChangeNumber=${handleNumberChange}
+          />`,
       },
       light: {
         title: "Lighting Schedule",
-        body: () => {
-          return html`
-            ${viewOnlyNotice}
-            <div className="input-group">
-              <label>Lighting mode</label>
-              <div className="chip-row">
-                ${[
-                  { label: "Daylight", value: "daylight" },
-                  { label: "Evening glow", value: "evening" },
-                  { label: "Sleep", value: "sleep" },
-                ].map(
-                  (option) => html`
-                    <button
-                      className=${`chip-button ${
-                        lightsMode === option.value ? "active" : ""
-                      }`}
-                      disabled=${controlsDisabled}
-                      onClick=${() =>
-                        handleSelectChange("lighting_mode", option.value)}
-                    >
-                      ${option.label}
-                    </button>
-                  `
-                )}
-              </div>
-            </div>
-            <div className="input-group">
-              <label for="sunriseSelect">Sunrise</label>
-              <select
-                id="sunriseSelect"
-                value=${lightsSunrise}
-                disabled=${controlsDisabled}
-                onChange=${(event) =>
-                  handleNumberChange(
-                    "lights__sunrise_hour",
-                    event.target.value
-                  )}
-              >
-                ${Array.from({ length: 48 }, (_, index) => index * 0.5).map(
-                  (value) =>
-                    html`<option value=${value}>${formatTime(value)}</option>`
-                )}
-              </select>
-            </div>
-            <div className="input-group">
-              <label for="lightDuration">Duration (hours)</label>
-              <input
-                id="lightDuration"
-                type="number"
-                min="1"
-                max="24"
-                step="0.25"
-                value=${lightsDuration}
-                disabled=${controlsDisabled}
-                onInput=${(event) =>
-                  handleNumberChange(
-                    "lights__duration__hours_",
-                    event.target.value
-                  )}
-              />
-            </div>
-            <div className="input-group">
-              <label for="canopyLux">Canopy brightness (lux)</label>
-              <input
-                id="canopyLux"
-                type="number"
-                min="0"
-                max="4000"
-                step="10"
-                value=${luxValue}
-                disabled=${controlsDisabled}
-                onInput=${(event) =>
-                  handleNumberChange("white_led_intensity", event.target.value)}
-              />
-            </div>
-            <div className="input-group">
-              <label for="accentColor">Accent color</label>
-              <input
-                id="accentColor"
-                type="color"
-                value=${currentColor}
-                disabled=${controlsDisabled}
-                onInput=${(event) => {
-                  const rgb = hexToRgb(event.target.value);
-                  handleNumberChange("red_led_intensity", rgb.r);
-                  handleNumberChange("green_led_intensity", rgb.g);
-                  handleNumberChange("blue_led_intensity", rgb.b);
-                }}
-              />
-            </div>
-          `;
-        },
+        body: () =>
+          html`<${LightModal}
+            viewOnlyNotice=${viewOnlyNotice}
+            controlsDisabled=${controlsDisabled}
+            lightsMode=${lightsMode}
+            lightsSunrise=${lightsSunrise}
+            lightsDuration=${lightsDuration}
+            luxValue=${luxValue}
+            currentColor=${currentColor}
+            onSelectMode=${(value) => handleSelectChange("lighting_mode", value)}
+            onChangeNumber=${handleNumberChange}
+            onChangeColor=${handleLightColorChange}
+          />`,
       },
       water: {
         title: "Water Reservoir Calibration",
-        body: () => {
-          const calibrated = getBoolean(entities, "binary_sensor", "water_calibrated");
-          return html`
-            ${viewOnlyNotice}
-            <p>
-              Empty and dry the water reservoir, then start the calibration
-              routine.
-            </p>
-            ${calibrationStatus
-              ? html`<p className="field-note">
-                  Current status: ${calibrationStatus}
-                </p>`
-              : null}
-            <button
-              className="primary-button"
-              disabled=${controlsDisabled}
-              onClick=${() => {
-                handleButtonClick("calibrate_dry_tank");
-                setTimeout(() => {
-                  handleButtonClick("calibrate_dry_tank");
-                  setCalibrationSuccess(true);
-                  setTimeout(() => setCalibrationSuccess(false), 8000);
-                }, 500);
-              }}
-            >
-              Calibrate empty reservoir
-            </button>
-            ${calibrationSuccess
-              ? html`<div className="success-banner">
-                  Calibration request sent.
-                </div>`
-              : calibrated
-              ? html`<div className="info-banner positive">
-                  Sensor calibrated recently.
-                </div>`
-              : html`<div className="info-banner warning">
-                  Calibration recommended for accurate readings.
-                </div>`}
-          `;
-        },
+        body: () =>
+          html`<${WaterModal}
+            viewOnlyNotice=${viewOnlyNotice}
+            controlsDisabled=${controlsDisabled}
+            calibrationStatus=${calibrationStatus}
+            calibrationSuccess=${calibrationSuccess}
+            calibrated=${reservoirCalibrated}
+            onStartCalibration=${handleWaterCalibration}
+          />`,
       },
       settings: {
         title: "Device Settings & Maintenance",
-        body: () => html`
-          ${viewOnlyNotice}
-          <section className="settings-section">
-            <h3>System</h3>
-            <div className="info-grid">
-              <div className="info-row">
-                <span className="info-label">Input voltage</span>
-                <span className="info-value">${voltageDisplay}</span>
-              </div>
-              <div className="info-row">
-                <span className="info-label">Last snapshot</span>
-                <span className="info-value">${lastUpdateDisplay}</span>
-              </div>
-              <div className="info-row">
-                <span className="info-label">Fan RPM</span>
-                <span className="info-value">
-                  ${Number.isFinite(fanRpm) ? `${fanRpm.toFixed(0)}` : "--"}
-                </span>
-              </div>
-            </div>
-          </section>
-          <section className="settings-section">
-            <h3>Network</h3>
-            <div className="info-grid">
-              <div className="info-row">
-                <span className="info-label">Mode</span>
-                <span className="info-value">${wifiMode}</span>
-              </div>
-              <div className="info-row">
-                <span className="info-label">SSID</span>
-                <span className="info-value">${wifiSSID}</span>
-              </div>
-              <div className="info-row">
-                <span className="info-label">Device IP</span>
-                <span className="info-value">${ipAddress}</span>
-              </div>
-            </div>
-          </section>
-          <section className="settings-section">
-            <h3>Licenses</h3>
-            <div className="input-group">
-              <label>Open-source notices</label>
-              <button
-                className="chip-button"
-                onClick=${() => setShowLicense((prev) => !prev)}
-              >
-                ${showLicense ? "Hide licenses" : "Show licenses"}
-              </button>
-              ${showLicense
-                ? html`<pre className="license-log">${licensesText}</pre>`
-                : null}
-            </div>
-          </section>
-          <section className="settings-section">
-            <h3>Firmware update (OTA)</h3>
-            <div className="input-group">
-              <input
-                type="file"
-                accept=".bin"
-                disabled=${controlsDisabled || otaStatus === "uploading"}
-                onChange=${(event) => {
-                  const file = event.target.files?.[0];
-                  if (file) {
-                    setOtaFile(file);
-                    setOtaStatus("idle");
-                    setOtaMessage("");
-                  }
-                }}
-              />
-              ${otaFile
-                ? html`<p className="file-helper">
-                    ${otaFile.name} ·
-                    ${(otaFile.size / (1024 * 1024)).toFixed(2)} MB
-                  </p>`
-                : null}
-              <div className="button-row">
-                <button
-                  className="primary-button"
-                  disabled=${controlsDisabled ||
-                  !otaFile ||
-                  otaStatus === "uploading"}
-                  onClick=${handleOtaUpload}
-                >
-                  ${otaStatus === "uploading"
-                    ? "Uploading…"
-                    : "Upload firmware"}
-                </button>
-                <button
-                  className="secondary-button"
-                  disabled=${controlsDisabled || otaStatus === "uploading"}
-                  onClick=${() => {
-                    setOtaFile(null);
-                    setOtaStatus("idle");
-                    setOtaProgress(0);
-                    setOtaMessage("");
-                  }}
-                >
-                  Clear selection
-                </button>
-              </div>
-              ${otaStatus !== "idle"
-                ? html`<p className="status-text ${otaStatus}">
-                    ${otaMessage}
-                  </p>`
-                : null}
-              ${otaStatus === "uploading"
-                ? html`<progress value=${otaProgress} max="100"></progress>`
-                : null}
-            </div>
-          </section>
-        `,
+        body: () =>
+          html`<${AdvancedSettingsModal}
+            viewOnlyNotice=${viewOnlyNotice}
+            controlsDisabled=${controlsDisabled}
+            voltageDisplay=${voltageDisplay}
+            lastSnapshot=${lastUpdateDisplay}
+            fanSpeedDisplay=${fanSpeedDisplay}
+            wifiMode=${wifiMode}
+            wifiSSID=${wifiSSID}
+            ipAddress=${ipAddress}
+            licensesText=${licensesText}
+            showLicense=${showLicense}
+            onToggleLicense=${toggleLicenseView}
+            otaFile=${otaFile}
+            otaStatus=${otaStatus}
+            otaMessage=${otaMessage}
+            otaProgress=${otaProgress}
+            onSelectFirmware=${selectFirmwareFile}
+            onUploadFirmware=${handleOtaUpload}
+            onResetFirmwareQueue=${resetFirmwareQueue}
+          />`,
       },
     };
-
     const entry = modalViews[modal];
     if (!entry) return null;
 
