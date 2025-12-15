@@ -83,6 +83,7 @@
   }
 
   let timezone = $state(loadPreferences().timezone || SYSTEM_TIME_ZONE || 'America/Denver');
+  let firmwareAutoCheck = $state(loadPreferences().firmwareAutoCheck ?? true);
   let calibrationSuccess = $state(false);
   let otaFile = $state<File | null>(null);
   let otaProgress = $state(0);
@@ -431,6 +432,27 @@
   }
 
   const formatDateKey = (date: Date) => date.toISOString().split('T')[0];
+
+  type ParsedSemver = { major: number; minor: number; patch: number };
+
+  function parseSemver(value: string | null | undefined): ParsedSemver | null {
+    if (!value) return null;
+    const cleaned = value.trim().replace(/^v/i, '');
+    const match = cleaned.match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
+    if (!match) return null;
+
+    const major = Number(match[1] ?? 0);
+    const minor = Number(match[2] ?? 0);
+    const patch = Number(match[3] ?? 0);
+    if (!Number.isFinite(major) || !Number.isFinite(minor) || !Number.isFinite(patch)) return null;
+    return { major, minor, patch };
+  }
+
+  function compareSemver(a: ParsedSemver, b: ParsedSemver) {
+    if (a.major !== b.major) return a.major - b.major;
+    if (a.minor !== b.minor) return a.minor - b.minor;
+    return a.patch - b.patch;
+  }
 
   function persistFirmwareCatalogCache() {
     if (typeof window === 'undefined' || typeof localStorage === 'undefined') return;
@@ -905,6 +927,11 @@
     section?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
+  function handleOpenFirmwareSettingsFromHeader() {
+    openModal('settings');
+    requestAnimationFrame(() => handleOpenFirmwareSettings());
+  }
+
   function handleCalibrateFromSettings() {
     if (blockControlsIfUnavailable()) return;
     openModal('water');
@@ -1026,6 +1053,26 @@
   let licensesText = $derived(text('licenses') || 'License list not yet reported by the device.');
   let firmwareVersion = $derived(text('firmware_version', '—'));
 
+  let latestFirmwareRelease = $derived.by(() => {
+    const latest = firmwareReleaseOptions.find((group) => group.label === 'Latest')?.options?.[0];
+    return latest ?? null;
+  });
+
+  let firmwareUpdateAvailable = $derived.by(() => {
+    const latest = latestFirmwareRelease;
+    if (!latest) return false;
+    const currentSemver = parseSemver(firmwareVersion);
+    const latestSemver = parseSemver(latest.tagName);
+    if (!currentSemver || !latestSemver) return false;
+    return compareSemver(latestSemver, currentSemver) > 0;
+  });
+
+  let showFirmwareUpdateButton = $derived.by(() => {
+    if (import.meta.env.DEV) return true;
+    if (typeof window === 'undefined') return false;
+    return firmwareUpdateAvailable || localHosts.includes(window.location.hostname);
+  });
+
   let voltageDisplay = $derived(
     Number.isFinite(systemVoltage) ? `${systemVoltage.toFixed(2)} V` : '--'
   );
@@ -1125,9 +1172,29 @@
 
   $effect(() => {
     const previous = loadPreferences();
+    const next = { ...previous };
+    let changed = false;
+
     if (previous.timezone !== timezone) {
-      savePreferences({ ...previous, timezone });
+      next.timezone = timezone;
+      changed = true;
     }
+
+    const previousFirmwareAutoCheck =
+      typeof previous.firmwareAutoCheck === 'boolean' ? previous.firmwareAutoCheck : true;
+    if (previousFirmwareAutoCheck !== firmwareAutoCheck) {
+      next.firmwareAutoCheck = firmwareAutoCheck;
+      changed = true;
+    }
+
+    if (changed) {
+      savePreferences(next);
+    }
+  });
+
+  $effect(() => {
+    if (!mounted || !firmwareAutoCheck) return;
+    loadFirmwareReleaseCatalog({ trigger: 'auto' });
   });
 
   $effect(() => {
@@ -1378,13 +1445,12 @@
       bootstrapped = true;
     };
 
-    bootstrap();
-    loadRandomQuote();
-    loadFirmwareReleaseCatalog({ trigger: 'auto' });
+	    bootstrap();
+	    loadRandomQuote();
 
-    return () => {
-      mounted = false;
-      bootstrapped = false;
+	    return () => {
+	      mounted = false;
+	      bootstrapped = false;
       document.body.classList.remove('loaded');
       window.removeEventListener('online', onOnline);
       window.removeEventListener('offline', onOffline);
@@ -1432,9 +1498,19 @@
               href="https://openshrooly.com/docs/"
               rel="noreferrer"
               target="_blank"
-            >
-              <span class="icon-[lucide--help-circle] text-[1.2rem]" aria-hidden="true"></span>
-            </a>
+	            >
+	              <span class="icon-[lucide--help-circle] text-[1.2rem]" aria-hidden="true"></span>
+	            </a>
+	            {#if showFirmwareUpdateButton}
+	              <button
+	                type="button"
+	                class="inline-flex h-9 w-9 items-center justify-center rounded-full bg-indigo-600 text-white shadow-sm transition-colors hover:bg-indigo-500 focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2"
+	                aria-label="Open firmware update"
+	                onclick={handleOpenFirmwareSettingsFromHeader}
+	              >
+	                <span class="icon-[lucide--cloud-download] text-[1.2rem]" aria-hidden="true"></span>
+	              </button>
+	            {/if}
 	            <button
 	              type="button"
 	              class="inline-flex h-9 w-9 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2"
@@ -1444,9 +1520,9 @@
 	            >
 	              <span class="icon-[lucide--sliders-horizontal] text-[1.2rem]" aria-hidden="true"></span>
 	            </button>
-          </div>
-        </div>
-      </header>
+	          </div>
+	        </div>
+	      </header>
       <main class="flex flex-1 flex-col gap-8">
         <div class="flex flex-col gap-8">
           <section class="flex flex-col gap-6" aria-labelledby="section-overview" data-overview>
@@ -1884,11 +1960,29 @@
               <div class="flex flex-col gap-3">
                 <div class="flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
                   <div class="flex flex-wrap items-center gap-4 px-5 py-4">
-                    <div class="flex min-w-0 flex-1 flex-col text-left">
-                      <span class="text-sm font-semibold text-slate-700">GitHub releases</span>
-                      <span class="text-xs text-slate-500">Load the latest OTA bundle from grahamsz/openshrooly</span>
-                      <span class="text-xs font-medium text-slate-600" data-settings-ota-current-version>Current firmware: —</span>
-                    </div>
+	                    <div class="flex min-w-0 flex-1 flex-col text-left">
+	                      <span class="text-sm font-semibold text-slate-700">GitHub releases</span>
+	                      <span class="text-xs font-medium text-slate-600" data-settings-ota-current-version>Current firmware: —</span>
+	                      <div class="mt-2 flex flex-wrap items-center gap-3">
+	                        <span class="text-xs font-medium text-slate-600">Auto-check updates</span>
+	                        <label class="relative inline-flex h-6 w-11 items-center">
+	                          <input
+	                            type="checkbox"
+	                            class="peer absolute inset-0 h-full w-full cursor-pointer appearance-none rounded-full opacity-0 focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500"
+	                            aria-label="Auto-check firmware updates"
+	                            bind:checked={firmwareAutoCheck}
+	                          />
+	                          <span
+	                            aria-hidden="true"
+	                            class="absolute inset-0 rounded-full bg-slate-300 transition peer-checked:bg-indigo-600"
+	                          ></span>
+	                          <span
+	                            aria-hidden="true"
+	                            class="absolute left-1 h-4 w-4 rounded-full bg-white shadow transition peer-checked:translate-x-5"
+	                          ></span>
+	                        </label>
+	                      </div>
+	                    </div>
                     <div class="flex flex-wrap items-center gap-2">
                       <div class="relative w-full min-w-[12rem] md:w-auto">
                         <select
