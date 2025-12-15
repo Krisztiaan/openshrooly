@@ -2165,6 +2165,7 @@ void WebServer::handle_app_request(AsyncWebServerRequest *request) {
       request->beginResponse_P(200, "text/html", ESPHOME_WEBSERVER_APP_HTML_INCLUDE, ESPHOME_WEBSERVER_APP_HTML_INCLUDE_SIZE);
 #endif
   response->addHeader("Content-Encoding", "gzip");
+  response->addHeader("Cache-Control", "no-cache");
   request->send(response);
 }
 #endif
@@ -2172,6 +2173,15 @@ void WebServer::handle_app_request(AsyncWebServerRequest *request) {
 void WebServer::handle_static_file_request(AsyncWebServerRequest *request) {
 #ifdef USE_WEBSERVER_APP_HTML_INCLUDE
   std::string url = request->url().c_str();
+
+  if (auto query_pos = url.find('?'); query_pos != std::string::npos) {
+    url.resize(query_pos);
+  }
+
+  if (url == "/manifest.webmanifest") url = "/app/manifest.webmanifest";
+  if (url == "/service-worker.js") url = "/app/service-worker.js";
+  if (url == "/index.html") url = "/app/index.html";
+  if (url == "/.vite/manifest.json") url = "/app/.vite/manifest.json";
 
   // Search for matching static file
   for (size_t i = 0; i < STATIC_FILES_COUNT; i++) {
@@ -2185,7 +2195,11 @@ void WebServer::handle_static_file_request(AsyncWebServerRequest *request) {
           request->beginResponse_P(200, STATIC_FILES[i].content_type, STATIC_FILES[i].data, STATIC_FILES[i].size);
 #endif
       response->addHeader("Content-Encoding", "gzip");
-      response->addHeader("Cache-Control", "public, max-age=31536000, immutable");
+      if (url.rfind("/app/assets/", 0) == 0) {
+        response->addHeader("Cache-Control", "public, max-age=31536000, immutable");
+      } else {
+        response->addHeader("Cache-Control", "no-cache");
+      }
       request->send(response);
       return;
     }

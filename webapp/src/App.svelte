@@ -550,7 +550,7 @@
         selectedFirmwareRelease = firstAvailable.id;
         handleFirmwareReleaseSelect(firstAvailable.id);
       } else if (groups.length) {
-        firmwareReleaseStatus = `${refreshedStatement} Select a firmware release and click “Load firmware” to fetch the OTA binary.`;
+        firmwareReleaseStatus = `${refreshedStatement} Select a firmware release and click “Download” to open the OTA binary.`;
       } else {
         firmwareReleaseStatus = `${refreshedStatement} No GitHub releases with OTA binaries were found.`;
       }
@@ -602,29 +602,51 @@
 
     firmwareReleaseDownloading = true;
     firmwareReleaseError = '';
-    firmwareReleaseStatus = `Downloading ${selected.assetName}…`;
+    firmwareReleaseStatus = `Preparing ${selected.assetName}…`;
 
     try {
-      const response = await fetch(selected.downloadUrl, {
-        headers: { Accept: 'application/octet-stream' }
-      });
-      if (!response.ok) {
-        throw new Error(`Download failed (${response.status})`);
-      }
-      const blob = await response.blob();
-      let file: File;
-      if (typeof File === 'function') {
-        file = new File([blob], selected.assetName, {
-          type: blob.type || 'application/octet-stream'
+      const downloadOrigin = (() => {
+        try {
+          return new URL(selected.downloadUrl).origin;
+        } catch {
+          return null;
+        }
+      })();
+
+      if (downloadOrigin && downloadOrigin === window.location.origin) {
+        const response = await fetch(selected.downloadUrl, {
+          headers: { Accept: 'application/octet-stream' }
         });
-      } else {
-        // Fallback for environments without File constructor support
-        const fallback = blob.slice(0, blob.size, blob.type || 'application/octet-stream');
-        (fallback as any).name = selected.assetName;
-        file = fallback as unknown as File;
+        if (!response.ok) {
+          throw new Error(`Download failed (${response.status})`);
+        }
+        const blob = await response.blob();
+        let file: File;
+        if (typeof File === 'function') {
+          file = new File([blob], selected.assetName, {
+            type: blob.type || 'application/octet-stream'
+          });
+        } else {
+          // Fallback for environments without File constructor support
+          const fallback = blob.slice(0, blob.size, blob.type || 'application/octet-stream');
+          (fallback as any).name = selected.assetName;
+          file = fallback as unknown as File;
+        }
+        selectFirmwareFile(file);
+        firmwareReleaseStatus = `Loaded ${selected.tagName}. Firmware ready to upload.`;
+        return;
       }
-      selectFirmwareFile(file);
-      firmwareReleaseStatus = `Loaded ${selected.tagName}. Firmware ready to upload.`;
+
+      firmwareReleaseStatus = `Opening ${selected.assetName} in a new tab…`;
+      const opened = window.open(selected.downloadUrl, '_blank', 'noopener,noreferrer');
+      if (!opened) {
+        firmwareReleaseError = `Your browser blocked the download tab. Open this URL manually: ${selected.downloadUrl}`;
+        firmwareReleaseStatus = '';
+        return;
+      }
+
+      firmwareReleaseStatus =
+        'Download started. Once complete, choose the .bin file below and click “Upload firmware”.';
     } catch (error) {
       firmwareReleaseError =
         error instanceof Error ? error.message : 'Failed to download firmware binary.';
@@ -1177,9 +1199,12 @@
     const shouldUseServiceWorker = !localHosts.includes(window.location.hostname);
     if ('serviceWorker' in navigator) {
       if (shouldUseServiceWorker) {
-        const swUrl = new URL('./service-worker.js', window.location.href);
+        const swUrl = new URL(
+          'service-worker.js',
+          new URL(import.meta.env.BASE_URL, window.location.origin)
+        );
         navigator.serviceWorker
-          .register(swUrl.href)
+          .register(swUrl.pathname)
           .catch((error) =>
             console.error('[PWA] Service worker registration failed', error)
           );
@@ -1776,7 +1801,7 @@
                         type="button"
                         data-settings-ota-release-load
                       >
-                        Load
+                        Download
                       </button>
                       <button
                         class="inline-flex items-center justify-center rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
