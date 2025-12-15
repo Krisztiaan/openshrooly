@@ -14,10 +14,9 @@ This is a modified version of ESPHome's built-in `web_server` component that add
 
 Unlike the standard LittleFS approach, this component embeds static dashboard files while compiling the firmware:
 
-1. Prepare or update the web assets under `webapp/` (the current dashboard uses native Preact + HTM modules).
-2. Trigger the PlatformIO pre-build hook (or run `embed_static_files.py` manually if you need to regenerate the files out-of-band). The ESPHome compile step now runs the script automatically.
-3. Point `app_html_include` at the dashboard HTML (`webapp/index.html`) so the base page is bundled.
-4. Build the firmware — the assets are linked into flash and served straight from PROGMEM.
+1. Update the dashboard source under `webapp/` (Svelte + Vite).
+2. Build the dashboard into `webapp/dist` (`cd webapp && npm ci && npm run build`).
+3. Compile the firmware — the PlatformIO pre-build hook regenerates `static_files.h/.cpp` from `webapp/dist` and links the gzip-compressed assets into flash (PROGMEM).
 
 ## Usage
 
@@ -34,16 +33,24 @@ web_server:
 
 ### 1. Update the dashboard assets
 
-Edit the files in `webapp/` (`index.html`, `app.js`, `styles/app.css`, `components/`, `vendor/`, etc.). The dashboard now ships as native ES modules, so you can develop by opening `index.html` with any static file server—no bundler step is required.
+Edit the dashboard source in `webapp/` (Vite entry in `index.html`, components in `src/`, and static assets in `public/`).
 
-### 2. Compile and upload (auto-embeds dashboard assets)
+### 2. Build the dashboard bundle
+
+```bash
+cd webapp
+npm ci
+npm run build
+```
+
+### 3. Compile and upload (auto-embeds dashboard assets)
 
 ```bash
 source ~/dev/esphome/.venv/bin/activate
 esphome run openshrooly.yaml
 ```
 
-> **Tip:** The pre-build hook calls `embed_static_files.py` every time you compile. If you need to regenerate the headers without compiling, you can still invoke the script manually using the command above.
+> **Tip:** The pre-build hook calls `embed_static_files.py` every time you compile. You can also run it manually if you want to regenerate the headers without compiling.
 
 ## Why Not LittleFS?
 
@@ -57,7 +64,7 @@ This approach embeds files in firmware instead of using LittleFS because:
 
 ## Captive Portal
 
-The captive portal continues to work as normal. The root path `/` still serves the ESPHome web interface, while `/app/*` serves your Next.js application.
+The captive portal continues to work as normal. The root path `/` still serves the ESPHome web interface, while `/app/*` serves the embedded dashboard.
 
 - `/` - ESPHome web interface (captive portal redirects here)
 - `/app/` - The embedded dashboard

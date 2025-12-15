@@ -95,3 +95,12 @@ text_sensor:
       } else {
         return {"192.168.4.1"};
       }
+
+  - platform: template
+    name: "Firmware Version"
+    id: firmware_version
+    internal: true
+    icon: mdi:chip
+    update_interval: never
+    lambda: |-
+      return {"${device_version}"};

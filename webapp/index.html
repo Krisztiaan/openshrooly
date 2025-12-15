@@ -12,15 +12,12 @@
       name="description"
       content="Monitor and control your OpenShrooly enclosure online or offline."
     />
-    <link rel="manifest" href="manifest.webmanifest" />
-    <link rel="icon" type="image/svg+xml" href="icons/favicon.svg" />
-    <link rel="apple-touch-icon" href="icons/icon-192.png" />
-    <link rel="stylesheet" href="styles/app.css" />
-    <script src="https://code.iconify.design/iconify-icon/1.0.7/iconify-icon.min.js"></script>
+    <link rel="manifest" href="/app/manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="/app/icons/favicon.svg" />
+    <link rel="apple-touch-icon" href="/app/icons/icon-192.png" />
   </head>
-  <body>
-    <noscript>This dashboard requires JavaScript.</noscript>
+  <body class="min-h-screen bg-slate-50 font-sans text-slate-900 antialiased">
     <div id="app"></div>
-    <script type="module" src="app.js"></script>
+    <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

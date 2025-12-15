@@ -69,6 +69,13 @@ jobs:
             echo "VERSION=preview-${SHORT_SHA}" >> $GITHUB_ENV
           fi
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: webapp/package-lock.json
+
       - name: Compute names
         id: names
         run: |
@@ -103,13 +110,29 @@ import sys
 from pathlib import Path
 
 cache_version = sys.argv[1]
-sw_path = Path("webapp/service-worker.js")
-text = sw_path.read_text()
 placeholder = "__CACHE_VERSION_STAMPED__"
-if placeholder not in text:
-    raise SystemExit("Placeholder missing in service-worker.js")
-sw_path.write_text(text.replace(placeholder, cache_version, 1))
+candidate_paths = [
+    Path("webapp/service-worker.js"),
+    Path("webapp/public/service-worker.js"),
+    Path("webapp/dist/service-worker.js"),
+]
+
+service_workers = [path for path in candidate_paths if path.exists()]
+if not service_workers:
+    raise SystemExit("Service worker not found in expected locations")
+
+for sw_path in service_workers:
+    text = sw_path.read_text()
+    if placeholder not in text:
+        raise SystemExit(f"Placeholder missing in {sw_path}")
+    sw_path.write_text(text.replace(placeholder, cache_version, 1))
 PY
+
+      - name: Build dashboard
+        run: |
+          cd webapp
+          npm ci
+          npm run build
 
       - name: Build firmware (once)
         id: build

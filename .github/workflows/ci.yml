@@ -56,32 +56,16 @@ jobs:
           cache: "npm"
           cache-dependency-path: webapp/package-lock.json
 
-      - name: Determine build ID
-        id: build_id
-        run: |
-          SHA="${{ github.sha }}"
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            SHA="${{ github.event.pull_request.head.sha }}"  # head SHA for PRs
-          fi
-          BUILD_ID="${SHA:0:12}"
-          echo "Using build id: ${BUILD_ID}"
-          echo "build_id=${BUILD_ID}" >> "$GITHUB_OUTPUT"
-
       - name: Build web UI
-        env:
-          NEXT_BUILD_ID: ${{ steps.build_id.outputs.build_id }}
         run: |
           cd webapp
           npm ci
-          node -v
-          npm -v
-          echo "NEXT_BUILD_ID=$NEXT_BUILD_ID"
           npm run build
 
       - name: Embed static assets
         run: |
           cd esphome
-          python3 external_components/web_server/embed_static_files.py ../webapp/out external_components/web_server/static_files.h external_components/web_server/static_files.cpp
+          python3 external_components/web_server/embed_static_files.py ../webapp/dist external_components/web_server/static_files.h external_components/web_server/static_files.cpp
 
       - name: Flag embedded asset drift
         run: |
