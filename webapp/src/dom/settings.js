@@ -6,6 +6,27 @@ const cache = {};
 
 const select = (selector) => document.querySelector(selector);
 
+function showDialog(dialog) {
+  if (!dialog) return;
+  if (typeof dialog.showModal === "function") {
+    if (!dialog.open) {
+      try {
+        dialog.showModal();
+      } catch {
+        dialog.setAttribute("open", "");
+      }
+    }
+  } else {
+    dialog.setAttribute("open", "");
+  }
+}
+
+function closeDialog(dialog) {
+  if (!dialog) return;
+  if (dialog.open) dialog.close();
+  dialog.removeAttribute("open");
+}
+
 function qs(root, selector) {
   return root ? root.querySelector(selector) : null;
 }
@@ -76,10 +97,18 @@ export function setupSettingsSheet({
     cache.otaReleaseError = cache.dialog?.querySelector("[data-settings-ota-release-error]");
     cache.otaCurrentVersion = cache.dialog?.querySelector("[data-settings-ota-current-version]");
 
-    cache.closeButton?.addEventListener("click", () => onClose?.());
+    const handleClose = () => {
+      closeDialog(cache.dialog);
+      onClose?.();
+    };
+
+    cache.closeButton?.addEventListener("click", (event) => {
+      event.preventDefault();
+      handleClose();
+    });
     cache.dialog?.addEventListener("cancel", (event) => {
       event.preventDefault();
-      onClose?.();
+      handleClose();
     });
     cache.dialog?.addEventListener("click", (event) => {
       if (event.target !== cache.dialog) return;
@@ -89,7 +118,7 @@ export function setupSettingsSheet({
         event.clientX <= rect.right &&
         event.clientY >= rect.top &&
         event.clientY <= rect.bottom;
-      if (!clickedInside) onClose?.();
+      if (!clickedInside) handleClose();
     });
     cache.timezoneButton?.addEventListener("click", () => {
       if (!cache.timezoneSelect) return;
@@ -138,13 +167,10 @@ export function setupSettingsSheet({
   return {
     show: () => {
       if (!cache.dialog) return;
-      if (typeof cache.dialog.showModal === "function") cache.dialog.showModal();
-      else cache.dialog.setAttribute("open", "");
+      showDialog(cache.dialog);
     },
     close: () => {
-      if (!cache.dialog) return;
-      if (cache.dialog.open) cache.dialog.close();
-      cache.dialog.removeAttribute("open");
+      closeDialog(cache.dialog);
     },
     isOpen: () => Boolean(cache.dialog?.open),
     update(data) {

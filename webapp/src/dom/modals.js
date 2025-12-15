@@ -23,7 +23,13 @@ function setDisabled(element, disabled) {
 function showDialog(dialog) {
   if (!dialog) return;
   if (typeof dialog.showModal === "function") {
-    if (!dialog.open) dialog.showModal();
+    if (!dialog.open) {
+      try {
+        dialog.showModal();
+      } catch {
+        dialog.setAttribute("open", "");
+      }
+    }
   } else {
     dialog.setAttribute("open", "");
   }

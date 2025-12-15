@@ -95,12 +95,34 @@
     calibrationSuccess = false;
     activeModal = modal;
     updateUrlModal(modal, 'push');
+    applyModalToDom(modal);
   }
 
   function closeModalIfActive(modal: ModalId) {
     if (activeModal !== modal) return;
     activeModal = null;
     updateUrlModal(null, 'replace');
+    applyModalToDom(null);
+  }
+
+  function applyModalToDom(modal: ModalId | null) {
+    if (modal === 'settings') {
+      CONTROL_MODAL_IDS.forEach((modalId) => controlModals?.close?.(modalId));
+      settingsSheet?.show?.();
+      return;
+    }
+
+    settingsSheet?.close?.();
+
+    if (modal) {
+      CONTROL_MODAL_IDS.forEach((modalId) => {
+        if (modalId === modal) controlModals?.show?.(modalId);
+        else controlModals?.close?.(modalId);
+      });
+      return;
+    }
+
+    CONTROL_MODAL_IDS.forEach((modalId) => controlModals?.close?.(modalId));
   }
 
   type FirmwareReleaseOption = {
@@ -1297,7 +1319,9 @@
     window.addEventListener('online', onOnline);
     window.addEventListener('offline', onOffline);
     const onPopState = () => {
-      activeModal = getModalFromUrl();
+      const modal = getModalFromUrl();
+      activeModal = modal;
+      applyModalToDom(modal);
     };
     window.addEventListener('popstate', onPopState);
 
@@ -1343,6 +1367,7 @@
     };
     triggers.forEach((node) => node.addEventListener('click', handleOpen));
     activeModal = getModalFromUrl();
+    applyModalToDom(activeModal);
 
     const bootstrap = async () => {
       const ok = await refreshSnapshot({ silent: true });
