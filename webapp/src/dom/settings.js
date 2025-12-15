@@ -82,7 +82,14 @@ export function setupSettingsSheet({
       onClose?.();
     });
     cache.dialog?.addEventListener("click", (event) => {
-      if (event.target === cache.dialog) onClose?.();
+      if (event.target !== cache.dialog) return;
+      const rect = cache.dialog.getBoundingClientRect();
+      const clickedInside =
+        event.clientX >= rect.left &&
+        event.clientX <= rect.right &&
+        event.clientY >= rect.top &&
+        event.clientY <= rect.bottom;
+      if (!clickedInside) onClose?.();
     });
     cache.timezoneButton?.addEventListener("click", () => {
       if (!cache.timezoneSelect) return;

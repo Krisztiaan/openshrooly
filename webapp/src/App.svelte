@@ -36,6 +36,51 @@
   const SYSTEM_TIME_ZONE = getSystemTimezone();
   const localHosts = ['localhost', '127.0.0.1', ''];
   const FIRMWARE_CATALOG_CACHE_KEY = 'openshrooly.firmwareCatalog.v1';
+  const APP_BASE_URL =
+    typeof window !== 'undefined'
+      ? new URL(import.meta.env.BASE_URL, window.location.origin)
+      : null;
+
+  const CONTROL_MODAL_IDS = ['humidity', 'temperature', 'air', 'light', 'water'] as const;
+  type ControlModalId = (typeof CONTROL_MODAL_IDS)[number];
+  type ModalId = 'settings' | ControlModalId;
+  const MODAL_QUERY_PARAM = 'modal';
+
+  function appPath(relativePath: string) {
+    if (!APP_BASE_URL) return relativePath;
+    const cleaned = relativePath.replace(/^\//, '');
+    return new URL(cleaned, APP_BASE_URL).pathname;
+  }
+
+  function parseModalId(value: string | null): ModalId | null {
+    if (!value) return null;
+    if (value === 'settings') return 'settings';
+    if ((CONTROL_MODAL_IDS as readonly string[]).includes(value)) {
+      return value as ControlModalId;
+    }
+    return null;
+  }
+
+  function getModalFromUrl(): ModalId | null {
+    if (typeof window === 'undefined') return null;
+    return parseModalId(new URL(window.location.href).searchParams.get(MODAL_QUERY_PARAM));
+  }
+
+  function updateUrlModal(modal: ModalId | null, mode: 'push' | 'replace' = 'push') {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    if (modal) {
+      url.searchParams.set(MODAL_QUERY_PARAM, modal);
+    } else {
+      url.searchParams.delete(MODAL_QUERY_PARAM);
+    }
+    const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+    if (mode === 'replace') {
+      window.history.replaceState({}, '', nextUrl);
+    } else {
+      window.history.pushState({}, '', nextUrl);
+    }
+  }
 
   let timezone = $state(loadPreferences().timezone || SYSTEM_TIME_ZONE || 'America/Denver');
   let calibrationSuccess = $state(false);
@@ -43,8 +88,20 @@
   let otaProgress = $state(0);
   let otaStatus = $state<'idle' | 'uploading' | 'success' | 'error'>('idle');
   let otaMessage = $state('');
-  let settingsSheetOpen = $state(false);
+  let activeModal = $state<ModalId | null>(null);
   let footerQuote = $state<{ text: string; author?: string | null } | null>(null);
+
+  function openModal(modal: ModalId) {
+    calibrationSuccess = false;
+    activeModal = modal;
+    updateUrlModal(modal, 'push');
+  }
+
+  function closeModalIfActive(modal: ModalId) {
+    if (activeModal !== modal) return;
+    activeModal = null;
+    updateUrlModal(null, 'replace');
+  }
 
   type FirmwareReleaseOption = {
     id: string;
@@ -101,7 +158,7 @@
     if (typeof document === 'undefined') return;
     if (document.querySelector('#icon-sprite')) return;
     try {
-      const response = await fetch('./icons/sprite.svg');
+      const response = await fetch(appPath('icons/sprite.svg'));
       if (!response.ok) return;
       const markup = await response.text();
       const wrapper = document.createElement('div');
@@ -314,7 +371,7 @@
 
   async function loadRandomQuote() {
     try {
-      const response = await fetch('./quotes.json');
+      const response = await fetch(appPath('quotes.json'));
       if (!response.ok) return;
       const data = await response.json();
       if (!Array.isArray(data) || data.length === 0) return;
@@ -828,12 +885,10 @@
 
   function handleCalibrateFromSettings() {
     if (blockControlsIfUnavailable()) return;
-    settingsSheetOpen = false;
-    controlModals?.show?.('water');
+    openModal('water');
   }
 
   function handleManageTrustedDevices() {
-    settingsSheetOpen = false;
     const node = document.querySelector('[data-settings-trusted]');
     node?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
@@ -1099,11 +1154,24 @@
   $effect(() => {
     if (!settingsSheet) return;
     const isDialogOpen = settingsSheet.isOpen?.() ?? false;
-    if (settingsSheetOpen && !isDialogOpen) {
+    const shouldBeOpen = activeModal === 'settings';
+    if (shouldBeOpen && !isDialogOpen) {
       settingsSheet.show?.();
-    } else if (!settingsSheetOpen && isDialogOpen) {
+    } else if (!shouldBeOpen && isDialogOpen) {
       settingsSheet.close?.();
     }
+  });
+
+  $effect(() => {
+    const modals = controlModals;
+    if (!modals) return;
+    CONTROL_MODAL_IDS.forEach((modalId) => {
+      if (activeModal === modalId) {
+        modals.show?.(modalId);
+      } else {
+        modals.close?.(modalId);
+      }
+    });
   });
 
   function updateControlModalsView() {
@@ -1192,6 +1260,12 @@
   });
 
   onMount(() => {
+    const shouldPreferAppBase = !localHosts.includes(window.location.hostname);
+    if (shouldPreferAppBase && APP_BASE_URL?.pathname && window.location.pathname === '/') {
+      window.location.replace(`${APP_BASE_URL.pathname}${window.location.search}${window.location.hash}`);
+      return;
+    }
+
     mounted = true;
     document.body.classList.add('loaded');
     ensureSpriteLoaded();
@@ -1222,9 +1296,13 @@
     const onOffline = () => handleOfflineChange(false);
     window.addEventListener('online', onOnline);
     window.addEventListener('offline', onOffline);
+    const onPopState = () => {
+      activeModal = getModalFromUrl();
+    };
+    window.addEventListener('popstate', onPopState);
 
     settingsSheet = setupSettingsSheet({
-      onClose: () => (settingsSheetOpen = false),
+      onClose: () => closeModalIfActive('settings'),
       onOpenFirmware: handleOpenFirmwareSettings,
       onToggleBle: (value: boolean) => handleToggleBle(value),
       onCalibrate: handleCalibrateFromSettings,
@@ -1245,20 +1323,26 @@
       onSelectChange: (id: string, value: string) => handleSelectChange(id, value),
       onColorChange: (value: string) => handleLightColorChange(value),
       onCalibrate: () => handleWaterCalibration(),
-      onClose: () => (calibrationSuccess = false)
+      onClose: (id: string) => {
+        calibrationSuccess = false;
+        const modalId = parseModalId(id);
+        if (modalId && modalId !== 'settings') {
+          closeModalIfActive(modalId);
+        }
+      }
     });
     updateControlModalsView();
 
     const triggers = Array.from(document.querySelectorAll('[data-modal]'));
     const handleOpen = (event: Event) => {
       const trigger = event.currentTarget as HTMLElement | null;
-      const modalId = trigger?.dataset?.modal;
+      const modalId = parseModalId(trigger?.dataset?.modal ?? null);
       if (!modalId) return;
       event.preventDefault();
-      calibrationSuccess = false;
-      controlModals?.show?.(modalId);
+      openModal(modalId);
     };
     triggers.forEach((node) => node.addEventListener('click', handleOpen));
+    activeModal = getModalFromUrl();
 
     const bootstrap = async () => {
       const ok = await refreshSnapshot({ silent: true });
@@ -1279,6 +1363,7 @@
       document.body.classList.remove('loaded');
       window.removeEventListener('online', onOnline);
       window.removeEventListener('offline', onOffline);
+      window.removeEventListener('popstate', onPopState);
       triggers.forEach((node) => node.removeEventListener('click', handleOpen));
       stopAllConnectivity();
       clearDebounceTimers();
@@ -1325,18 +1410,15 @@
             >
               <span class="icon-[lucide--help-circle] text-[1.2rem]" aria-hidden="true"></span>
             </a>
-            <button
-              type="button"
-              class="inline-flex h-9 w-9 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2"
-              aria-label="Open settings"
-              data-open-settings
-              onclick={() => {
-                settingsSheetOpen = true;
-                settingsSheet?.show?.();
-              }}
-            >
-              <span class="icon-[lucide--sliders-horizontal] text-[1.2rem]" aria-hidden="true"></span>
-            </button>
+	            <button
+	              type="button"
+	              class="inline-flex h-9 w-9 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2"
+	              aria-label="Open settings"
+	              data-open-settings
+	              onclick={() => openModal('settings')}
+	            >
+	              <span class="icon-[lucide--sliders-horizontal] text-[1.2rem]" aria-hidden="true"></span>
+	            </button>
           </div>
         </div>
       </header>
@@ -1538,24 +1620,23 @@
         </div>
       </main>
     </div>
-    <dialog class="w-full max-w-3xl rounded-3xl border border-slate-200 bg-white p-0 shadow-2xl open:fixed open:left-1/2 open:top-1/2 open:z-50 open:m-0 open:w-[calc(100vw-2rem)] open:-translate-x-1/2 open:-translate-y-1/2 open:max-h-[90vh] open:overflow-y-auto sm:open:w-auto" data-settings-dialog>
-      <div class="relative flex flex-col gap-6 p-6" data-settings-container>
-        <button
-          class="absolute right-4 top-4 inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-          aria-label="Close"
-          type="button"
-          data-settings-close
-        >
-          <span class="icon-[lucide--x] text-[1.35rem]" aria-hidden="true"></span>
-        </button>
-        <div class="flex flex-col gap-6">
-          <header class="border-b border-slate-200 pb-4">
-            <h2 class="text-xl font-semibold text-slate-900">Settings</h2>
-          </header>
-          <div class="flex flex-col gap-6" data-settings-body>
-            <div class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800" data-settings-viewonly hidden>
-              Device offline — controls stay read-only until connectivity returns.
-            </div>
+	    <dialog class="w-full max-w-3xl rounded-3xl border border-slate-200 bg-white p-0 shadow-2xl open:fixed open:left-1/2 open:top-1/2 open:z-50 open:m-0 open:w-[calc(100vw-2rem)] open:-translate-x-1/2 open:-translate-y-1/2 open:max-h-[90vh] open:overflow-y-auto sm:open:w-auto" data-settings-dialog>
+	      <div class="flex flex-col" data-settings-container>
+	        <div class="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-slate-200 bg-white/80 px-6 py-4 backdrop-blur">
+	          <h2 class="text-xl font-semibold text-slate-900">Settings</h2>
+	          <button
+	            class="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+	            aria-label="Close"
+	            type="button"
+	            data-settings-close
+	          >
+	            <span class="icon-[lucide--x] text-[1.35rem]" aria-hidden="true"></span>
+	          </button>
+	        </div>
+	        <div class="flex flex-col gap-6 p-6" data-settings-body>
+	            <div class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800" data-settings-viewonly hidden>
+	              Device offline — controls stay read-only until connectivity returns.
+	            </div>
 
             <section class="flex flex-col gap-4" aria-labelledby="settings-device">
               <header class="flex flex-col gap-1">
@@ -1770,11 +1851,11 @@
               </div>
             </section>
 
-            <section class="flex flex-col gap-4" data-settings-ota>
-              <header class="flex flex-col gap-1">
-                <h2 class="text-lg font-semibold text-slate-900">Firmware update (OTA)</h2>
-                <p class="text-sm text-slate-500">Upload ESPHome binary</p>
-              </header>
+	            <section class="flex flex-col gap-4" data-settings-ota>
+	              <header class="flex flex-col gap-1">
+	                <h2 class="text-lg font-semibold text-slate-900">Firmware update (OTA)</h2>
+	                <p class="text-sm text-slate-500">Upload ESPHome binary</p>
+	              </header>
               <div class="flex flex-col gap-3">
                 <div class="flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
                   <div class="flex flex-wrap items-center gap-4 px-5 py-4">
@@ -1830,34 +1911,32 @@
                     Clear selection
                   </button>
                 </div>
-                <div class="flex flex-col gap-2 rounded-lg border border-indigo-200 bg-indigo-50 p-4 text-sm text-indigo-900" data-settings-ota-status hidden>
-                  <span data-settings-ota-message></span>
-                  <progress max="100" value="0" data-settings-ota-progress hidden></progress>
-                </div>
-              </div>
-            </section>
-          </div>
-        </div>
-      </div>
-    </dialog>
-    <dialog class="w-full max-w-3xl rounded-3xl border border-slate-200 bg-white p-0 shadow-2xl open:fixed open:left-1/2 open:top-1/2 open:z-50 open:m-0 open:w-[calc(100vw-2rem)] open:-translate-x-1/2 open:-translate-y-1/2 open:max-h-[90vh] open:overflow-y-auto sm:open:w-auto" data-control-dialog="humidity">
-      <div class="relative flex flex-col gap-6 p-6" data-control-container>
-        <button
-          class="absolute right-4 top-4 inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-          aria-label="Close"
-          type="button"
-          data-control-close="humidity"
-        >
-          <span class="icon-[lucide--x] text-[1.35rem]" aria-hidden="true"></span>
-        </button>
-        <div class="flex flex-col gap-6">
-          <header class="border-b border-slate-200 pb-4">
-            <h2 class="text-xl font-semibold text-slate-900">Humidity Control</h2>
-          </header>
-          <div class="flex flex-col gap-6">
-            <div class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800" data-control-viewonly="humidity" hidden>
-              Device offline — controls stay read-only until connectivity returns.
-            </div>
+	                <div class="flex flex-col gap-2 rounded-lg border border-indigo-200 bg-indigo-50 p-4 text-sm text-indigo-900" data-settings-ota-status hidden>
+	                  <span data-settings-ota-message></span>
+	                  <progress max="100" value="0" data-settings-ota-progress hidden></progress>
+	                </div>
+	              </div>
+	            </section>
+	        </div>
+	      </div>
+	    </dialog>
+	    <dialog class="w-full max-w-3xl rounded-3xl border border-slate-200 bg-white p-0 shadow-2xl open:fixed open:left-1/2 open:top-1/2 open:z-50 open:m-0 open:w-[calc(100vw-2rem)] open:-translate-x-1/2 open:-translate-y-1/2 open:max-h-[90vh] open:overflow-y-auto sm:open:w-auto" data-control-dialog="humidity">
+	      <div class="flex flex-col" data-control-container>
+	        <div class="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-slate-200 bg-white/80 px-6 py-4 backdrop-blur">
+	          <h2 class="text-xl font-semibold text-slate-900">Humidity Control</h2>
+	          <button
+	            class="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+	            aria-label="Close"
+	            type="button"
+	            data-control-close="humidity"
+	          >
+	            <span class="icon-[lucide--x] text-[1.35rem]" aria-hidden="true"></span>
+	          </button>
+	        </div>
+	        <div class="flex flex-col gap-6 p-6">
+	            <div class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800" data-control-viewonly="humidity" hidden>
+	              Device offline — controls stay read-only until connectivity returns.
+	            </div>
             <div class="flex flex-col gap-2">
               <label class="text-sm font-medium text-slate-600" for="humidity-target">Target humidity (%)</label>
               <input
@@ -1909,33 +1988,31 @@
                 step="5"
                 data-control-input="humidifier__speed"
               />
-              <p class="text-xs text-slate-500">
-                Higher speeds add humidity faster but increase noise and water consumption.
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-    </dialog>
+	              <p class="text-xs text-slate-500">
+	                Higher speeds add humidity faster but increase noise and water consumption.
+	              </p>
+	            </div>
+	        </div>
+	      </div>
+	    </dialog>
 
-    <dialog class="w-full max-w-3xl rounded-3xl border border-slate-200 bg-white p-0 shadow-2xl open:fixed open:left-1/2 open:top-1/2 open:z-50 open:m-0 open:w-[calc(100vw-2rem)] open:-translate-x-1/2 open:-translate-y-1/2 open:max-h-[90vh] open:overflow-y-auto sm:open:w-auto" data-control-dialog="temperature">
-      <div class="relative flex flex-col gap-6 p-6" data-control-container>
-        <button
-          class="absolute right-4 top-4 inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-          aria-label="Close"
-          type="button"
-          data-control-close="temperature"
-        >
-          <span class="icon-[lucide--x] text-[1.35rem]" aria-hidden="true"></span>
-        </button>
-        <div class="flex flex-col gap-6">
-          <header class="border-b border-slate-200 pb-4">
-            <h2 class="text-xl font-semibold text-slate-900">Temperature Guard</h2>
-          </header>
-          <div class="flex flex-col gap-6">
-            <div class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800" data-control-viewonly="temperature" hidden>
-              Device offline — controls stay read-only until connectivity returns.
-            </div>
+	    <dialog class="w-full max-w-3xl rounded-3xl border border-slate-200 bg-white p-0 shadow-2xl open:fixed open:left-1/2 open:top-1/2 open:z-50 open:m-0 open:w-[calc(100vw-2rem)] open:-translate-x-1/2 open:-translate-y-1/2 open:max-h-[90vh] open:overflow-y-auto sm:open:w-auto" data-control-dialog="temperature">
+	      <div class="flex flex-col" data-control-container>
+	        <div class="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-slate-200 bg-white/80 px-6 py-4 backdrop-blur">
+	          <h2 class="text-xl font-semibold text-slate-900">Temperature Guard</h2>
+	          <button
+	            class="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+	            aria-label="Close"
+	            type="button"
+	            data-control-close="temperature"
+	          >
+	            <span class="icon-[lucide--x] text-[1.35rem]" aria-hidden="true"></span>
+	          </button>
+	        </div>
+	        <div class="flex flex-col gap-6 p-6">
+	            <div class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800" data-control-viewonly="temperature" hidden>
+	              Device offline — controls stay read-only until connectivity returns.
+	            </div>
             <div class="flex items-center justify-between gap-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
               <label class="relative inline-flex h-6 w-11 items-center">
                 <input
@@ -2017,33 +2094,31 @@
                 step="1"
                 data-control-input="temperature__vent_holdoff_minutes"
               />
-              <p class="text-xs text-slate-500">
-                Prevents cold drafts from affecting readings immediately after venting.
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-    </dialog>
+	              <p class="text-xs text-slate-500">
+	                Prevents cold drafts from affecting readings immediately after venting.
+	              </p>
+	            </div>
+	        </div>
+	      </div>
+	    </dialog>
 
-    <dialog class="w-full max-w-3xl rounded-3xl border border-slate-200 bg-white p-0 shadow-2xl open:fixed open:left-1/2 open:top-1/2 open:z-50 open:m-0 open:w-[calc(100vw-2rem)] open:-translate-x-1/2 open:-translate-y-1/2 open:max-h-[90vh] open:overflow-y-auto sm:open:w-auto" data-control-dialog="air">
-      <div class="relative flex flex-col gap-6 p-6" data-control-container>
-        <button
-          class="absolute right-4 top-4 inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-          aria-label="Close"
-          type="button"
-          data-control-close="air"
-        >
-          <span class="icon-[lucide--x] text-[1.35rem]" aria-hidden="true"></span>
-        </button>
-        <div class="flex flex-col gap-6">
-          <header class="border-b border-slate-200 pb-4">
-            <h2 class="text-xl font-semibold text-slate-900">Air Exchange Routine</h2>
-          </header>
-          <div class="flex flex-col gap-6">
-            <div class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800" data-control-viewonly="air" hidden>
-              Device offline — controls stay read-only until connectivity returns.
-            </div>
+	    <dialog class="w-full max-w-3xl rounded-3xl border border-slate-200 bg-white p-0 shadow-2xl open:fixed open:left-1/2 open:top-1/2 open:z-50 open:m-0 open:w-[calc(100vw-2rem)] open:-translate-x-1/2 open:-translate-y-1/2 open:max-h-[90vh] open:overflow-y-auto sm:open:w-auto" data-control-dialog="air">
+	      <div class="flex flex-col" data-control-container>
+	        <div class="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-slate-200 bg-white/80 px-6 py-4 backdrop-blur">
+	          <h2 class="text-xl font-semibold text-slate-900">Air Exchange Routine</h2>
+	          <button
+	            class="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+	            aria-label="Close"
+	            type="button"
+	            data-control-close="air"
+	          >
+	            <span class="icon-[lucide--x] text-[1.35rem]" aria-hidden="true"></span>
+	          </button>
+	        </div>
+	        <div class="flex flex-col gap-6 p-6">
+	            <div class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800" data-control-viewonly="air" hidden>
+	              Device offline — controls stay read-only until connectivity returns.
+	            </div>
             <div class="flex flex-col gap-2">
               <label class="text-sm font-medium text-slate-600" for="air-period">Cycle every (minutes)</label>
               <input
@@ -2092,11 +2167,11 @@
                 data-control-input="air_exchange__holdoff_minutes"
               />
               <p class="text-xs text-slate-500">
-                Prevents the fan from fighting humidity recovery right after a misting cycle.
-              </p>
-            </div>
-            <div class="flex flex-col gap-2">
-              <label class="text-sm font-medium text-slate-600" for="air-boost">Boost when humidity &gt; target (%)</label>
+	                Prevents the fan from fighting humidity recovery right after a misting cycle.
+	              </p>
+	            </div>
+	            <div class="flex flex-col gap-2">
+	              <label class="text-sm font-medium text-slate-600" for="air-boost">Boost when humidity &gt; target (%)</label>
               <input
                 class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 id="air-boost"
@@ -2104,32 +2179,30 @@
                 min="0"
                 max="10"
                 step="0.5"
-                data-control-input="air_exchange__boost_threshold"
-              />
-            </div>
-          </div>
-        </div>
-      </div>
-    </dialog>
+	                data-control-input="air_exchange__boost_threshold"
+	              />
+	            </div>
+	        </div>
+	      </div>
+	    </dialog>
 
-    <dialog class="w-full max-w-3xl rounded-3xl border border-slate-200 bg-white p-0 shadow-2xl open:fixed open:left-1/2 open:top-1/2 open:z-50 open:m-0 open:w-[calc(100vw-2rem)] open:-translate-x-1/2 open:-translate-y-1/2 open:max-h-[90vh] open:overflow-y-auto sm:open:w-auto" data-control-dialog="light">
-      <div class="relative flex flex-col gap-6 p-6" data-control-container>
-        <button
-          class="absolute right-4 top-4 inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-          aria-label="Close"
-          type="button"
-          data-control-close="light"
-        >
-          <span class="icon-[lucide--x] text-[1.35rem]" aria-hidden="true"></span>
-        </button>
-        <div class="flex flex-col gap-6">
-          <header class="border-b border-slate-200 pb-4">
-            <h2 class="text-xl font-semibold text-slate-900">Lighting Schedule</h2>
-          </header>
-          <div class="flex flex-col gap-6">
-            <div class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800" data-control-viewonly="light" hidden>
-              Device offline — controls stay read-only until connectivity returns.
-            </div>
+	    <dialog class="w-full max-w-3xl rounded-3xl border border-slate-200 bg-white p-0 shadow-2xl open:fixed open:left-1/2 open:top-1/2 open:z-50 open:m-0 open:w-[calc(100vw-2rem)] open:-translate-x-1/2 open:-translate-y-1/2 open:max-h-[90vh] open:overflow-y-auto sm:open:w-auto" data-control-dialog="light">
+	      <div class="flex flex-col" data-control-container>
+	        <div class="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-slate-200 bg-white/80 px-6 py-4 backdrop-blur">
+	          <h2 class="text-xl font-semibold text-slate-900">Lighting Schedule</h2>
+	          <button
+	            class="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+	            aria-label="Close"
+	            type="button"
+	            data-control-close="light"
+	          >
+	            <span class="icon-[lucide--x] text-[1.35rem]" aria-hidden="true"></span>
+	          </button>
+	        </div>
+	        <div class="flex flex-col gap-6 p-6">
+	            <div class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800" data-control-viewonly="light" hidden>
+	              Device offline — controls stay read-only until connectivity returns.
+	            </div>
             <div class="flex flex-col gap-2">
               <span class="text-sm font-medium text-slate-600">Lighting mode</span>
               <div class="flex flex-wrap gap-2" data-control-lighting-modes>
@@ -2193,36 +2266,34 @@
             </div>
             <div class="flex flex-col gap-2">
               <label class="text-sm font-medium text-slate-600" for="light-color">Accent color</label>
-              <input
-                class="h-12 w-24 cursor-pointer rounded-lg border border-slate-300 bg-white shadow-sm"
-                id="light-color"
-                type="color"
-                data-control-color
-              />
-            </div>
-          </div>
-        </div>
-      </div>
-    </dialog>
+	              <input
+	                class="h-12 w-24 cursor-pointer rounded-lg border border-slate-300 bg-white shadow-sm"
+	                id="light-color"
+	                type="color"
+	                data-control-color
+	              />
+	            </div>
+	        </div>
+	      </div>
+	    </dialog>
 
-    <dialog class="w-full max-w-3xl rounded-3xl border border-slate-200 bg-white p-0 shadow-2xl open:fixed open:left-1/2 open:top-1/2 open:z-50 open:m-0 open:w-[calc(100vw-2rem)] open:-translate-x-1/2 open:-translate-y-1/2 open:max-h-[90vh] open:overflow-y-auto sm:open:w-auto" data-control-dialog="water">
-      <div class="relative flex flex-col gap-6 p-6" data-control-container>
-        <button
-          class="absolute right-4 top-4 inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-          aria-label="Close"
-          type="button"
-          data-control-close="water"
-        >
-          <span class="icon-[lucide--x] text-[1.35rem]" aria-hidden="true"></span>
-        </button>
-        <div class="flex flex-col gap-6">
-          <header class="border-b border-slate-200 pb-4">
-            <h2 class="text-xl font-semibold text-slate-900">Water Reservoir</h2>
-          </header>
-          <div class="flex flex-col gap-6">
-            <div class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800" data-control-viewonly="water" hidden>
-              Device offline — controls stay read-only until connectivity returns.
-            </div>
+	    <dialog class="w-full max-w-3xl rounded-3xl border border-slate-200 bg-white p-0 shadow-2xl open:fixed open:left-1/2 open:top-1/2 open:z-50 open:m-0 open:w-[calc(100vw-2rem)] open:-translate-x-1/2 open:-translate-y-1/2 open:max-h-[90vh] open:overflow-y-auto sm:open:w-auto" data-control-dialog="water">
+	      <div class="flex flex-col" data-control-container>
+	        <div class="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-slate-200 bg-white/80 px-6 py-4 backdrop-blur">
+	          <h2 class="text-xl font-semibold text-slate-900">Water Reservoir</h2>
+	          <button
+	            class="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+	            aria-label="Close"
+	            type="button"
+	            data-control-close="water"
+	          >
+	            <span class="icon-[lucide--x] text-[1.35rem]" aria-hidden="true"></span>
+	          </button>
+	        </div>
+	        <div class="flex flex-col gap-6 p-6">
+	            <div class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800" data-control-viewonly="water" hidden>
+	              Device offline — controls stay read-only until connectivity returns.
+	            </div>
             <p class="text-sm text-slate-500">
               Empty and dry the reservoir, then start the calibration routine.
             </p>
@@ -2230,14 +2301,13 @@
             <div class="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800" data-control-water-success hidden>
               Calibration request sent.
             </div>
-            <button
-              class="inline-flex items-center justify-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              type="button"
-              data-control-action="calibrate_water"
-            >
-              Calibrate empty reservoir
-            </button>
-          </div>
-        </div>
-      </div>
-    </dialog>
+	            <button
+	              class="inline-flex items-center justify-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+	              type="button"
+	              data-control-action="calibrate_water"
+	            >
+	              Calibrate empty reservoir
+	            </button>
+	        </div>
+	      </div>
+	    </dialog>

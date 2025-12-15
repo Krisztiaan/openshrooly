@@ -35,6 +35,18 @@ function closeDialog(dialog) {
   dialog.removeAttribute("open");
 }
 
+function isDialogBackdropClick(dialog, event) {
+  if (!dialog) return false;
+  if (event.target !== dialog) return false;
+  const rect = dialog.getBoundingClientRect();
+  return (
+    event.clientX < rect.left ||
+    event.clientX > rect.right ||
+    event.clientY < rect.top ||
+    event.clientY > rect.bottom
+  );
+}
+
 function bindHumidity(callbacks) {
   const { onNumberChange, onClose } = callbacks;
   const dialog = document.querySelector('[data-control-dialog="humidity"]');
@@ -72,7 +84,7 @@ function bindHumidity(callbacks) {
   listeners.push(() => dialog.removeEventListener("cancel", cancelHandler));
 
   const backdropHandler = (event) => {
-    if (event.target === dialog) handleClose();
+    if (isDialogBackdropClick(dialog, event)) handleClose();
   };
   dialog.addEventListener("click", backdropHandler);
   listeners.push(() => dialog.removeEventListener("click", backdropHandler));
@@ -187,7 +199,7 @@ function bindTemperature(callbacks) {
   listeners.push(() => dialog.removeEventListener("cancel", cancelHandler));
 
   const backdropHandler = (event) => {
-    if (event.target === dialog) handleClose();
+    if (isDialogBackdropClick(dialog, event)) handleClose();
   };
   dialog.addEventListener("click", backdropHandler);
   listeners.push(() => dialog.removeEventListener("click", backdropHandler));
@@ -293,7 +305,7 @@ function bindAir(callbacks) {
   listeners.push(() => dialog.removeEventListener("cancel", cancelHandler));
 
   const backdropHandler = (event) => {
-    if (event.target === dialog) handleClose();
+    if (isDialogBackdropClick(dialog, event)) handleClose();
   };
   dialog.addEventListener("click", backdropHandler);
   listeners.push(() => dialog.removeEventListener("click", backdropHandler));
@@ -362,7 +374,7 @@ function bindLighting(callbacks) {
   listeners.push(() => dialog.removeEventListener("cancel", cancelHandler));
 
   const backdropHandler = (event) => {
-    if (event.target === dialog) handleClose();
+    if (isDialogBackdropClick(dialog, event)) handleClose();
   };
   dialog.addEventListener("click", backdropHandler);
   listeners.push(() => dialog.removeEventListener("click", backdropHandler));
@@ -493,7 +505,7 @@ function bindWater(callbacks) {
   listeners.push(() => dialog.removeEventListener("cancel", cancelHandler));
 
   const backdropHandler = (event) => {
-    if (event.target === dialog) handleClose();
+    if (isDialogBackdropClick(dialog, event)) handleClose();
   };
   dialog.addEventListener("click", backdropHandler);
   listeners.push(() => dialog.removeEventListener("click", backdropHandler));
